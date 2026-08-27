@@ -22,7 +22,7 @@ class PolicyManager:
         self.app_policies: Dict[str, str] = {
             "chrome.exe": "allow",
             "mspaint.exe": "prompt",
-            "notepad.exe": "deny"
+            "notepad.exe": "prompt"
         }
         self.load_from_file()
 

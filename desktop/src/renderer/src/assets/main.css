@@ -122,19 +122,46 @@ body {
 }
 
 .status-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
 }
 
-.status-dot.idle { background-color: var(--color-text-muted); }
-.status-dot.observing { background-color: var(--color-observe); }
-.status-dot.planning { background-color: var(--color-plan); }
-.status-dot.acting { background-color: var(--color-act); }
-.status-dot.verifying { background-color: var(--color-verify); }
-.status-dot.completed { background-color: var(--color-success); }
-.status-dot.error { background-color: var(--color-error); }
-.status-dot.takeover { background-color: var(--color-takeover); }
+/* Dynamic status color mappings */
+.status-dot.idle,
+.status-dot.cancelled,
+.status-dot.stopped,
+.status-dot.disconnected {
+  background-color: var(--color-text-muted);
+}
+
+.status-dot.running,
+.status-dot.observing,
+.status-dot.planning,
+.status-dot.connecting {
+  background-color: var(--color-plan);
+}
+
+.status-dot.paused,
+.status-dot.waiting_permission {
+  background-color: var(--color-takeover);
+}
+
+.status-dot.acting {
+  background-color: var(--color-act);
+}
+
+.status-dot.completed {
+  background-color: var(--color-success);
+}
+
+.status-dot.failed,
+.status-dot.error,
+.status-dot.unavailable {
+  background-color: var(--color-error);
+}
 
 .header-actions {
   display: flex;

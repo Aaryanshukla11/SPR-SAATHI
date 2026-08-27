@@ -56,6 +56,7 @@ function App(): React.JSX.Element {
   const [reconnectAttempts, setReconnectAttempts] = useState(0)
   const [activeTab, setActiveTab] = useState<'control' | 'security' | 'settings' | 'logs'>('control')
   const [showLoopActivity, setShowLoopActivity] = useState(false)
+  const [takeoverLoading, setTakeoverLoading] = useState(false)
   const [installedApps, setInstalledApps] = useState<{name: string, version: string, publisher: string, key: string}[]>([])
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -291,7 +292,6 @@ function App(): React.JSX.Element {
               addFeedItem('act', `Decision: ${data.message}`, timestamp)
               break
             case 'permission_required':
-            case 'tool.requested':
               setAgentState((prev) => ({ ...prev, status: 'waiting_permission' }))
               if (data.payload) {
                 setActivePrompt({
@@ -300,6 +300,10 @@ function App(): React.JSX.Element {
                   arguments: data.payload.arguments
                 })
               }
+              addFeedItem('takeover', data.message, timestamp)
+              break
+            case 'tool.requested':
+              setAgentState((prev) => ({ ...prev, status: 'waiting_permission' }))
               addFeedItem('takeover', data.message, timestamp)
               break
             case 'act':
@@ -323,12 +327,21 @@ function App(): React.JSX.Element {
               break
             case 'takeover':
             case 'task.paused':
+            case 'control.takeover_started':
               setAgentState((prev) => ({ 
                 ...prev, 
                 takeover_active: true, 
                 status: 'paused'
               }))
               addFeedItem('takeover', data.message, timestamp)
+              break
+            case 'control.release_requested':
+            case 'task.resuming':
+              setAgentState((prev) => ({ 
+                ...prev, 
+                status: 'resuming'
+              }))
+              addFeedItem('observe', data.message, timestamp)
               break
             case 'task.resumed':
               setAgentState((prev) => ({ 
@@ -345,6 +358,8 @@ function App(): React.JSX.Element {
                 status: 'cancelled',
                 steps: prev.steps.map((s) => s.status === 'running' || s.status === 'pending' ? { ...s, status: 'cancelled' } : s)
               }))
+              setActivePrompt(null)
+              setUserQuestion(null)
               addFeedItem('error', data.message, timestamp)
               break
             case 'log':
@@ -359,6 +374,8 @@ function App(): React.JSX.Element {
                 error_message: data.message,
                 steps: prev.steps.map((s) => s.status === 'running' ? { ...s, status: 'failed' } : s)
               }))
+              setActivePrompt(null)
+              setUserQuestion(null)
               addFeedItem('error', data.message, timestamp)
               break
             case 'task_completed':
@@ -368,6 +385,8 @@ function App(): React.JSX.Element {
                 status: 'completed',
                 steps: prev.steps.map((s) => s.status === 'running' || s.status === 'pending' ? { ...s, status: 'completed' } : s)
               }))
+              setActivePrompt(null)
+              setUserQuestion(null)
               addFeedItem('success', data.message, timestamp)
               break
             case 'tool.completed':
@@ -604,12 +623,15 @@ function App(): React.JSX.Element {
   }
 
   const toggleTakeover = async () => {
-    if (port === null) return
-    const endpoint = agentState.takeover_active ? 'release' : 'take'
+    if (port === null || takeoverLoading) return
+    setTakeoverLoading(true)
+    const endpoint = agentState.takeover_active ? 'release' : 'takeover'
     try {
-      await fetch(`http://127.0.0.1:${port}/api/takeover/${endpoint}`, { method: 'POST' })
+      await fetch(`http://127.0.0.1:${port}/api/control/${endpoint}`, { method: 'POST' })
     } catch (e) {
       console.error('Takeover request error:', e)
+    } finally {
+      setTakeoverLoading(false)
     }
   }
 
@@ -712,22 +734,22 @@ function App(): React.JSX.Element {
           </div>
           {backendStatus === 'connected' ? (
             <div className={`header-status connected ${status}`}>
-              <span className="status-dot connected">●</span>
+              <span className={`status-dot ${status}`}></span>
               <span>{status.replace('_', ' ')}</span>
             </div>
           ) : backendStatus === 'connecting' ? (
             <div className="header-status connecting">
-              <span className="status-dot connecting">○</span>
+              <span className="status-dot connecting"></span>
               <span>Connecting...</span>
             </div>
           ) : backendStatus === 'unavailable' ? (
             <div className="header-status unavailable">
-              <span className="status-dot unavailable">⚠</span>
+              <span className="status-dot unavailable"></span>
               <span>Backend unavailable</span>
             </div>
           ) : (
             <div className="header-status disconnected">
-              <span className="status-dot disconnected">○</span>
+              <span className="status-dot disconnected"></span>
               <span>Disconnected</span>
             </div>
           )}
@@ -1239,18 +1261,59 @@ function App(): React.JSX.Element {
       <footer className="app-footer">
         
         {/* Start / Stop / Takeover Buttons */}
-        <div className="action-row">
+        <div className="action-row" style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px', width: '100%' }}>
           {status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped' && (
             <>
-              <button 
-                className={`btn ${agentState.takeover_active ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={toggleTakeover}
-              >
-                {agentState.takeover_active ? 'Resume Agent' : 'Take Control'}
-              </button>
-              <button className="btn btn-danger" onClick={triggerStopTask}>
-                Stop Task
-              </button>
+              {agentState.takeover_active ? (
+                <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', borderRadius: '12px', padding: '10px 12px', textAlign: 'center', width: '100%' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24', marginBottom: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '12px' }}>🟡</span> HUMAN CONTROL
+                  </div>
+                  <div style={{ fontSize: '10.5px', color: 'var(--color-text-secondary)', marginBottom: '8px' }}>
+                    SPR SAATHI is paused. You control the computer.
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                    <button 
+                      className="btn btn-primary"
+                      onClick={toggleTakeover}
+                      disabled={takeoverLoading}
+                      style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', borderRadius: '6px' }}
+                    >
+                      <span>▶</span> RELEASE CONTROL
+                    </button>
+                    <button 
+                      className="btn btn-danger"
+                      onClick={triggerStopTask}
+                      style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', borderRadius: '6px' }}
+                    >
+                      <span>■</span> STOP TASK
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '10px 12px', textAlign: 'center', width: '100%' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                    <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#3b82f6', animation: 'pulse 1.5s infinite' }}></span> AI Working
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={toggleTakeover}
+                      disabled={takeoverLoading}
+                      style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', borderRadius: '6px' }}
+                    >
+                      <span>🖐</span> TAKE CONTROL
+                    </button>
+                    <button 
+                      className="btn btn-danger"
+                      onClick={triggerStopTask}
+                      style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', borderRadius: '6px' }}
+                    >
+                      <span>■</span> STOP
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

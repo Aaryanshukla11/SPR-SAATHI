@@ -31,7 +31,7 @@ takeover_manager = TakeoverManager()
 current_model_provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
 planner = RuleBasedPlanner(current_model_provider)
 tools = get_all_tools()
-executor = ToolExecutor(tools, permission_broker)
+executor = ToolExecutor(tools, permission_broker, takeover_manager)
 
 from contextlib import asynccontextmanager
 
@@ -151,7 +151,7 @@ async def get_state():
 
 @app.post("/api/task/start")
 async def start_task(req: StartTaskRequest):
-    if state_tracker.status not in ["idle", "stopped", "completed", "error"]:
+    if state_tracker.status not in ["idle", "stopped", "completed", "error", "failed", "cancelled"]:
         raise HTTPException(status_code=400, detail="Agent is already busy running a task.")
     
     agent_loop.start_task(req.task)
@@ -162,31 +162,60 @@ async def stop_task():
     agent_loop.stop_task()
     return {"status": "stopped"}
 
+@app.get("/api/control/state")
+async def get_control_state():
+    return {"control_state": takeover_manager.control_state}
+
+@app.post("/api/control/takeover")
 @app.post("/api/takeover/take")
-async def take_control():
-    takeover_manager.take_control()
+async def take_control_endpoint():
+    success = takeover_manager.take_control()
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid state transition: cannot take control in current state.")
+    
+    agent_loop.pause_task_for_takeover()
     state_tracker.takeover_active = True
+    
     await broadcast_event({
-        "event_type": "takeover",
+        "event_type": "control.takeover_started",
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "task_id": state_tracker.task_id,
         "message": "User took control. AI execution paused.",
-        "payload": {"takeover_active": True}
+        "payload": {
+            "takeover_active": True,
+            "control_state": takeover_manager.control_state
+        }
     })
-    return {"status": "paused_by_user"}
+    return {"status": "paused_by_user", "control_state": takeover_manager.control_state}
 
+@app.post("/api/control/release")
 @app.post("/api/takeover/release")
-async def release_control():
-    takeover_manager.release_control()
+async def release_control_endpoint():
+    # If the task was stopped/cancelled while user had control, reject release resume
+    if state_tracker.status in ["cancelled", "stopped", "completed", "failed"]:
+        # Just update takeover manager control state back to AI_CONTROL without loop resume
+        takeover_manager.release_control()
+        state_tracker.takeover_active = False
+        return {"status": "released_no_resume", "control_state": takeover_manager.control_state}
+
+    success = takeover_manager.release_control()
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid state transition: cannot release control in current state.")
+    
     state_tracker.takeover_active = False
     await broadcast_event({
-        "event_type": "takeover",
+        "event_type": "control.release_requested",
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "task_id": state_tracker.task_id,
-        "message": "User released control. AI resuming execution...",
-        "payload": {"takeover_active": False}
+        "message": "User released control. Resuming AI execution...",
+        "payload": {
+            "takeover_active": False,
+            "control_state": takeover_manager.control_state
+        }
     })
-    return {"status": "resumed"}
+    
+    asyncio.create_task(agent_loop.resume_task_after_takeover())
+    return {"status": "resumed", "control_state": takeover_manager.control_state}
 
 # Permissions REST endpoints matching Requirement 18
 @app.get("/api/permissions")

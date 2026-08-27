@@ -16,8 +16,32 @@ class BasePlanner(ABC):
         """Generates a high-level progress plan representing the goal checklist."""
         pass
 
+    @abstractmethod
+    async def revalidate_plan(self, task: str, plan: List[Dict[str, Any]], observation: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
+        """Evaluates current plan against desktop state and actions history. Returns completed, replan, valid, or ambiguous."""
+        pass
+
 
 class RuleBasedPlanner(BasePlanner):
+    async def revalidate_plan(self, task: str, plan: List[Dict[str, Any]], observation: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
+        # Simple rule-based revalidation for Paint house task and other tasks
+        task_lower = task.lower().strip()
+        if "paint" in task_lower:
+            # Check if Paint is running
+            active_win = observation.get("active_window")
+            is_paint_open = active_win and "paint" in active_win.get("title", "").lower()
+            if not is_paint_open:
+                for w in observation.get("visible_windows", []):
+                    if "paint" in w.get("title", "").lower():
+                        is_paint_open = True
+                        break
+            
+            if not is_paint_open:
+                return "replan" # If they closed Paint, replan (which will launch it again)
+            return "replan"
+            
+        return "replan"
+
     def create_high_level_plan(self, task: str) -> List[Dict[str, Any]]:
         task_lower = task.lower().strip()
         steps = []

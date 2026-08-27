@@ -148,7 +148,7 @@ def test_policy_manager_precedence(temp_config_path):
     pm = PolicyManager(config_path=temp_config_path)
     pm.update_policy("mouse", "allow")
     assert pm.get_policy("mouse_click", "mouse", {}) == "allow"
-    assert pm.get_policy("launch_app", "applications", {"app_name": "notepad.exe"}) == "deny"
+    assert pm.get_policy("launch_app", "applications", {"app_name": "notepad.exe"}) == "prompt"
     pm.update_app_policy("discord.exe", "allow")
     assert pm.get_policy("launch_app", "applications", {"app_name": "discord.exe"}) == "allow"
     pm.update_policy("applications", "deny")

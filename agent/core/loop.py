@@ -73,6 +73,105 @@ class AgentLoop:
             self._running_task.cancel()
         asyncio.create_task(self._emit_event("task.cancelled", "Task was cancelled/stopped by user."))
 
+    def pause_task_for_takeover(self):
+        """
+        Immediately pauses the current task.
+        Cancels the running loop task to interrupt active operations,
+        but does NOT reset the state tracker (maintaining task_id and state).
+        """
+        if not self._running_task or self._running_task.done():
+            # If not running, check if it's already paused or idle
+            self.takeover_manager.take_control()
+            self.state_tracker.takeover_active = True
+            self.state_tracker.update_status("paused")
+            return
+
+        # Trigger takeover state in manager
+        self.takeover_manager.take_control()
+        
+        # Update tracker status
+        self.state_tracker.takeover_active = True
+        self.state_tracker.update_status("paused")
+        
+        # Release any mouse buttons immediately
+        win32_utils.release_all_buttons()
+        
+        # Resolve user response futures if any
+        if self._user_response_future and not self._user_response_future.done():
+            self._user_response_future.cancel()
+
+        if hasattr(self.executor, "permission_broker"):
+            self.executor.permission_broker.cancel_all_pending()
+
+        # Cancel the running task to raise CancelledError instantly
+        self._running_task.cancel()
+        
+        asyncio.create_task(self._emit_event("task.paused", "Takeover active: execution paused by user."))
+
+    async def resume_task_after_takeover(self) -> bool:
+        """
+        Resumes task execution after takeover is released.
+        Performs re-observation, plan revalidation, and replanning before resuming AI_CONTROL.
+        """
+        if self.state_tracker.status != "paused":
+            return False
+
+        # Transitioning state
+        self.takeover_manager.release_control()
+        self.state_tracker.takeover_active = False
+        
+        self.state_tracker.update_status("resuming")
+        await self._emit_event("task.resuming", "Transitioning back to AI control. Re-observing desktop state...")
+        
+        # 1. State Re-observation
+        active_window = win32_utils.get_active_window_details()
+        visible_windows = win32_utils.list_desktop_windows()
+        screen_w, screen_h = win32_utils.get_screen_size()
+        cursor_x, cursor_y = win32_utils.get_cursor_position()
+        
+        obs = {
+            "active_window": active_window,
+            "visible_windows": visible_windows,
+            "screen": {"width": screen_w, "height": screen_h},
+            "cursor": {"x": cursor_x, "y": cursor_y}
+        }
+        self.state_tracker.update_computer_state(obs)
+        await self._emit_event("control.reobservation_completed", "Re-observation completed.", obs)
+        
+        # 2. Plan Revalidation / Compare state
+        task_desc = self.state_tracker.current_task or ""
+        reval_outcome = await self.planner.revalidate_plan(
+            task=task_desc,
+            plan=self.state_tracker.steps,
+            observation=obs,
+            history=self.state_tracker.action_history
+        )
+        
+        await self._emit_event("status_change", f"Plan revalidation outcome: {reval_outcome}")
+        
+        # 3. Action Invalidation & Replanning
+        if reval_outcome == "completed":
+            self.state_tracker.update_status("completed")
+            await self._emit_event("task.completed", "Revalidation determined the goal is already completed!")
+            return True
+        elif reval_outcome == "ambiguous":
+            self.state_tracker.update_status("waiting_user")
+            await self._emit_event("task.waiting_user", "Revalidation state ambiguous. Clarification required.", {"question": "State is ambiguous after takeover. Do you want me to proceed?"})
+            return True
+        elif reval_outcome == "replan":
+            self.state_tracker.update_status("planning")
+            await self._emit_event("task.planning", "Re-planning checklist based on new observation...")
+            new_steps = self.planner.create_high_level_plan(task_desc)
+            self.state_tracker.set_structured_steps(new_steps)
+            await self._emit_event("task.plan_updated", "Re-planned checklist generated.", {"steps": new_steps})
+            await asyncio.sleep(0.5)
+
+        # 4. Spawn new loop task continuing from same state
+        self._cancellation_requested = False
+        self._running_task = asyncio.create_task(self._loop(task_desc))
+        await self._emit_event("task.resumed", "AI control active: loop execution resumed.")
+        return True
+
     async def _loop(self, task: str):
         start_task_time = time.time()
         consecutive_replans = 0
@@ -356,10 +455,16 @@ class AgentLoop:
                     await asyncio.sleep(0.5)
 
         except asyncio.CancelledError:
-            self.state_tracker.update_status("cancelled")
-            self.state_tracker.cancel_all_steps()
-            win32_utils.release_all_buttons()
-            await self._emit_event("task.cancelled", "Autonomous task cancelled.")
+            if self.takeover_manager.is_takeover_active:
+                # Execution paused for human takeover; preserve checklist state & task ID
+                self.state_tracker.update_status("paused")
+                win32_utils.release_all_buttons()
+                await self._emit_event("control.takeover_started", "Takeover active: AI loop paused safely.")
+            else:
+                self.state_tracker.update_status("cancelled")
+                self.state_tracker.cancel_all_steps()
+                win32_utils.release_all_buttons()
+                await self._emit_event("task.cancelled", "Autonomous task cancelled.")
         except Exception as e:
             self.state_tracker.update_status("failed")
             self.state_tracker.error_message = str(e)
