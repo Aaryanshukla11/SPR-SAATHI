@@ -67,8 +67,13 @@
         "computer_state": {
           "type": ["object", "null"],
           "properties": {
-            "active_window": { "$ref": "#/definitions/ActiveWindow" }
-          }
+            "active_window": { "$ref": "#/definitions/ActiveWindow" },
+            "screen_width": { "type": "integer" },
+            "screen_height": { "type": "integer" },
+            "cursor_x": { "type": "integer" },
+            "cursor_y": { "type": "integer" }
+          },
+          "required": ["screen_width", "screen_height", "cursor_x", "cursor_y"]
         }
       },
       "required": ["status", "current_task", "task_id", "active_step_id", "steps", "takeover_active"]

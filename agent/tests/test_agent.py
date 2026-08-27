@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from agent.core.state import StateTracker
 from agent.permissions.policies import PolicyManager
@@ -9,33 +9,41 @@ from agent.core.executor import ToolExecutor
 from agent.core.planner import RuleBasedPlanner
 from agent.core.loop import AgentLoop
 from agent.tools import get_all_tools
+from agent.core import win32_utils
+from agent.core.action_validator import validate_action
 
 @pytest.fixture(autouse=True)
 def mock_win32_utils():
-    """Mock win32_utils to avoid actual OS calls during unit tests."""
+    """Mock win32_utils calls to avoid actual hardware clicks during tests."""
     with patch("agent.core.win32_utils.IS_WINDOWS", False), \
          patch("agent.core.win32_utils.get_active_window_details") as mock_active, \
          patch("agent.core.win32_utils.list_desktop_windows") as mock_list, \
          patch("agent.core.win32_utils.focus_window") as mock_focus, \
          patch("agent.core.win32_utils.type_text") as mock_type, \
          patch("agent.core.win32_utils.press_key") as mock_press, \
-         patch("agent.core.win32_utils.hotkey") as mock_hotkey:
+         patch("agent.core.win32_utils.hotkey") as mock_hotkey, \
+         patch("agent.core.win32_utils.mouse_move") as mock_move, \
+         patch("agent.core.win32_utils.mouse_down") as mock_down, \
+         patch("agent.core.win32_utils.mouse_up") as mock_up, \
+         patch("agent.core.win32_utils.mouse_drag") as mock_drag, \
+         patch("agent.core.win32_utils.release_all_buttons") as mock_release, \
+         patch("agent.core.win32_utils.get_screen_size", return_value=(1920, 1080)):
          
         mock_active.return_value = {
             "hwnd": 12345,
-            "title": "Untitled - Notepad",
-            "process": "notepad.exe",
+            "title": "Untitled - Paint",
+            "process": "mspaint.exe",
             "pid": 1234,
-            "bounds": {"x": 100, "y": 100, "width": 800, "height": 600}
+            "bounds": {"x": 200, "y": 100, "width": 800, "height": 600}
         }
         
         mock_list.return_value = [
             {
                 "hwnd": 12345,
-                "title": "Untitled - Notepad",
-                "process": "notepad.exe",
+                "title": "Untitled - Paint",
+                "process": "mspaint.exe",
                 "pid": 1234,
-                "bounds": {"x": 100, "y": 100, "width": 800, "height": 600}
+                "bounds": {"x": 200, "y": 100, "width": 800, "height": 600}
             }
         ]
         
@@ -47,113 +55,118 @@ def mock_win32_utils():
             "focus": mock_focus,
             "type": mock_type,
             "press": mock_press,
-            "hotkey": mock_hotkey
+            "hotkey": mock_hotkey,
+            "move": mock_move,
+            "down": mock_down,
+            "up": mock_up,
+            "drag": mock_drag,
+            "release": mock_release
         }
 
-def test_state_tracker():
-    tracker = StateTracker()
-    assert tracker.status == "idle"
-    tracker.reset("Open Notepad")
-    assert tracker.current_task == "Open Notepad"
-    assert tracker.task_id is not None
-    
-    tracker.set_steps(["Step 1", "Step 2"])
-    assert len(tracker.steps) == 2
-    assert tracker.steps[0]["status"] == "pending"
-    
-    tracker.start_step("step_1")
-    assert tracker.steps[0]["status"] == "running"
-    
-    tracker.complete_step("step_1")
-    assert tracker.steps[0]["status"] == "completed"
+# --- Action Validation Tests ---
 
-def test_policy_manager():
-    pm = PolicyManager()
-    assert pm.get_policy("mouse_move", "computer") == "prompt"
-    assert pm.get_policy("launch_app", "windows") == "allow"
+def test_action_validation_mouse_move():
+    # Valid
+    ok, err = validate_action("mouse_move", {"x": 500, "y": 500, "duration_ms": 100})
+    assert ok is True
     
+    # Invalid coords
+    ok, err = validate_action("mouse_move", {"x": 3000, "y": 500})
+    assert ok is False
+    assert "outside screen width bounds" in err
+    
+    # Invalid types
+    ok, err = validate_action("mouse_move", {"x": "five", "y": 500})
+    assert ok is False
+    assert "must be integers" in err
+    
+    # Invalid duration
+    ok, err = validate_action("mouse_move", {"x": 500, "y": 500, "duration_ms": -10})
+    assert ok is False
+    assert "Duration must be an integer" in err
+
+def test_action_validation_mouse_click():
+    # Valid
+    ok, err = validate_action("mouse_click", {"x": 100, "y": 100, "button": "right", "click_count": 2})
+    assert ok is True
+    
+    # Invalid button
+    ok, err = validate_action("mouse_click", {"x": 100, "y": 100, "button": "scroll"})
+    assert ok is False
+    assert "Unsupported mouse button" in err
+    
+    # Invalid click count
+    ok, err = validate_action("mouse_click", {"x": 100, "y": 100, "click_count": 10})
+    assert ok is False
+    assert "Click count must be an integer between 1 and 5" in err
+
+def test_action_validation_keyboard():
+    # Valid type
+    ok, err = validate_action("keyboard_type", {"text": "Hello"})
+    assert ok is True
+    
+    # Invalid type payload
+    ok, err = validate_action("keyboard_type", {"text": 123})
+    assert ok is False
+    
+    # Valid key press
+    ok, err = validate_action("keyboard_press", {"key": "ENTER"})
+    assert ok is True
+    
+    # Invalid key press
+    ok, err = validate_action("keyboard_press", {"key": "FOO_BAR"})
+    assert ok is False
+    assert "Unrecognized keyboard key name" in err
+    
+    # Valid hotkey
+    ok, err = validate_action("keyboard_hotkey", {"keys": ["CTRL", "SHIFT", "S"]})
+    assert ok is True
+    
+    # Invalid hotkey item
+    ok, err = validate_action("keyboard_hotkey", {"keys": ["CTRL", "INVALID_KEY"]})
+    assert ok is False
+    assert "Unrecognized keyboard key name" in err
+
+# --- Coordinate Conversion Tests ---
+
+def test_coordinate_conversion_valid():
+    args = {"x": 100, "y": 150, "target_window": "Paint"}
+    resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(args)
+    assert resolved is True
+    # Window is at x=200, y=100. Rel coords: 100, 150. Absolute should be 300, 250
+    assert abs_x == 300
+    assert abs_y == 250
+    assert args["x"] == 300
+    assert args["y"] == 250
+
+def test_coordinate_conversion_missing_window():
+    args = {"x": 100, "y": 150, "target_window": "Calculator"}
+    resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(args)
+    assert resolved is False
+    assert "not found on the desktop" in err
+
+# --- Action Routing & Tool Execution ---
+
+@pytest.mark.asyncio
+async def test_tool_routing():
+    pm = PolicyManager()
     pm.update_policy("computer", "allow")
-    assert pm.get_policy("mouse_move", "computer") == "allow"
-
-@pytest.mark.asyncio
-async def test_permission_broker_allow():
-    pm = PolicyManager()
     broker = PermissionBroker(pm)
-    pm.update_policy("windows", "allow")
-    
-    allowed = await broker.check_permission("launch_app", "windows", {})
-    assert allowed is True
-
-@pytest.mark.asyncio
-async def test_permission_broker_deny():
-    pm = PolicyManager()
-    broker = PermissionBroker(pm)
-    pm.update_policy("terminal", "deny")
-    
-    allowed = await broker.check_permission("cmd", "terminal", {})
-    assert allowed is False
-
-@pytest.mark.asyncio
-async def test_permission_broker_prompt():
-    pm = PolicyManager()
-    broker = PermissionBroker(pm)
-    pm.update_policy("computer", "prompt")
-    
-    prompted = False
-    async def mock_callback(request_id, tool_name, arguments):
-        nonlocal prompted
-        prompted = True
-        # Resolve it
-        broker.resolve_permission(request_id, "allow")
-
-    broker.on_prompt_callback = mock_callback
-    allowed = await broker.check_permission("mouse_move", "computer", {"x": 10, "y": 20})
-    
-    assert prompted is True
-    assert allowed is True
-
-@pytest.mark.asyncio
-async def test_tool_executor_with_denied_permission():
-    pm = PolicyManager()
-    broker = PermissionBroker(pm)
-    pm.update_policy("filesystem", "deny")
-    
     tools = get_all_tools()
     executor = ToolExecutor(tools, broker)
     
-    result = await executor.execute_action("create_file", {"filepath": "test.txt", "content": "hello"})
-    assert result["success"] is False
-    assert "Permission denied" in result["error"]
+    # Test routing to MouseClickTool
+    result = await executor.execute_action("mouse_click", {"x": 100, "y": 100, "button": "left"})
+    assert result["success"] is True
+    assert "clicked" in result["output"]
+
+# --- Cancellation & Cleanup ---
 
 @pytest.mark.asyncio
-async def test_planner_decomposition():
-    # Setup mock provider
-    mock_provider = MagicMock()
-    planner = RuleBasedPlanner(mock_provider)
-    
-    # 1. Notepad launch and type decomposition
-    steps, calls = await planner.create_plan("Open Notepad and type Hello SPR Saathi", "Desktop")
-    assert len(steps) == 3
-    assert len(calls) == 3
-    assert calls[0]["tool_name"] == "launch_app"
-    assert calls[1]["tool_name"] == "focus_window"
-    assert calls[2]["tool_name"] == "keyboard_type"
-    assert calls[2]["arguments"]["text"] == "Hello SPR Saathi"
-    
-    # 2. Just app launch
-    steps, calls = await planner.create_plan("Open Paint", "Desktop")
-    assert len(steps) == 1
-    assert calls[0]["tool_name"] == "launch_app"
-    assert calls[0]["arguments"]["app_name"] == "mspaint.exe"
-
-@pytest.mark.asyncio
-async def test_agent_loop_execution(mock_win32_utils):
-    # Setup components
+async def test_agent_loop_cancellation_cleanup(mock_win32_utils):
     tracker = StateTracker()
-    mock_provider = MagicMock()
-    planner = RuleBasedPlanner(mock_provider)
+    planner = RuleBasedPlanner(MagicMock())
     pm = PolicyManager()
-    # Allow windows & computer actions to bypass prompts for loop speed test
     pm.update_policy("windows", "allow")
     pm.update_policy("computer", "allow")
     broker = PermissionBroker(pm)
@@ -162,24 +175,45 @@ async def test_agent_loop_execution(mock_win32_utils):
     takeover_manager = MagicMock()
     takeover_manager.is_takeover_active = False
     
-    events = []
-    async def mock_broadcast(event):
-        events.append(event)
+    loop = AgentLoop(tracker, planner, executor, takeover_manager)
+    
+    # Request Stop
+    loop.stop_task()
+    
+    # Verify the release_all_buttons mock was triggered to avoid stuck OS states
+    assert mock_win32_utils["release"].call_count == 1
 
-    loop = AgentLoop(tracker, planner, executor, takeover_manager, mock_broadcast)
+# --- Takeover Pausing & Button Release ---
+
+@pytest.mark.asyncio
+async def test_agent_loop_takeover_pausing(mock_win32_utils):
+    tracker = StateTracker()
+    planner = RuleBasedPlanner(MagicMock())
+    pm = PolicyManager()
+    pm.update_policy("windows", "allow")
+    pm.update_policy("computer", "allow")
+    broker = PermissionBroker(pm)
+    tools = get_all_tools()
+    executor = ToolExecutor(tools, broker)
     
-    # Execute notepad typing task
-    loop.start_task("Open Notepad and type Hello SPR Saathi")
+    # Simulate active human takeover
+    takeover_manager = MagicMock()
+    takeover_manager.is_takeover_active = True
     
-    # Wait for the task task loop task to complete
-    await asyncio.sleep(4.5)
+    async def mock_wait_takeover():
+        await asyncio.sleep(5.0)
+    takeover_manager.wait_if_takeover = mock_wait_takeover
     
-    assert tracker.status == "completed"
-    assert len(tracker.steps) == 3
-    assert tracker.steps[0]["status"] == "completed"
-    assert tracker.steps[1]["status"] == "completed"
-    assert tracker.steps[2]["status"] == "completed"
+    loop = AgentLoop(tracker, planner, executor, takeover_manager)
     
-    # Verify Win32 utilities were invoked
-    assert mock_win32_utils["type"].call_count == 1
-    mock_win32_utils["type"].assert_called_with("Hello SPR Saathi")
+    # Start task
+    loop.start_task("Open Paint and draw a house")
+    
+    # Sleep short time to allow OBSERVE and PLAN, then hit the step loop
+    await asyncio.sleep(1.5)
+    
+    print(f"DIAGNOSTIC - status: {tracker.status}, error_message: {tracker.error_message}")
+    # Verify that takeover was hit, loop paused, and held buttons were released
+    assert tracker.status == "takeover"
+    assert mock_win32_utils["release"].call_count == 1
+

@@ -15,9 +15,86 @@ class BasePlanner(ABC):
 
 class RuleBasedPlanner(BasePlanner):
     async def create_plan(self, task: str, observation: str) -> Tuple[List[str], List[Dict[str, Any]]]:
-        # Perform matches case-insensitively on original task to preserve typed text casing
+        task_lower = task.lower().strip()
         
-        # Rule 1: Launch app AND type text (e.g. "Open Notepad and type Hello SPR Saathi")
+        # Rule 1: Paint drawing workflow
+        if "paint" in task_lower and "draw" in task_lower and "house" in task_lower:
+            steps_desc = [
+                "Launch application: mspaint.exe",
+                "Wait and focus window for: Paint",
+                "Draw wall (top edge)",
+                "Draw wall (right edge)",
+                "Draw wall (bottom edge)",
+                "Draw wall (left edge)",
+                "Draw roof (left slope)",
+                "Draw roof (right slope)",
+                "Draw door (left edge)",
+                "Draw door (top edge)",
+                "Draw door (right edge)"
+            ]
+            tool_calls = [
+                {
+                    "call_id": "step_1",
+                    "tool_name": "launch_app",
+                    "arguments": {"app_name": "mspaint.exe"}
+                },
+                {
+                    "call_id": "step_2",
+                    "tool_name": "focus_window",
+                    "arguments": {"process_name": "mspaint.exe", "title_substring": "Paint"}
+                },
+                # Wall
+                {
+                    "call_id": "step_3",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 300, "start_y": 300, "end_x": 500, "end_y": 300, "duration_ms": 300, "target_window": "Paint"}
+                },
+                {
+                    "call_id": "step_4",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 500, "start_y": 300, "end_x": 500, "end_y": 500, "duration_ms": 300, "target_window": "Paint"}
+                },
+                {
+                    "call_id": "step_5",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 500, "start_y": 500, "end_x": 300, "end_y": 500, "duration_ms": 300, "target_window": "Paint"}
+                },
+                {
+                    "call_id": "step_6",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 300, "start_y": 500, "end_x": 300, "end_y": 300, "duration_ms": 300, "target_window": "Paint"}
+                },
+                # Roof
+                {
+                    "call_id": "step_7",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 300, "start_y": 300, "end_x": 400, "end_y": 200, "duration_ms": 300, "target_window": "Paint"}
+                },
+                {
+                    "call_id": "step_8",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 400, "start_y": 200, "end_x": 500, "end_y": 300, "duration_ms": 300, "target_window": "Paint"}
+                },
+                # Door
+                {
+                    "call_id": "step_9",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 370, "start_y": 500, "end_x": 370, "end_y": 400, "duration_ms": 200, "target_window": "Paint"}
+                },
+                {
+                    "call_id": "step_10",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 370, "start_y": 400, "end_x": 430, "end_y": 400, "duration_ms": 200, "target_window": "Paint"}
+                },
+                {
+                    "call_id": "step_11",
+                    "tool_name": "mouse_drag",
+                    "arguments": {"start_x": 430, "start_y": 400, "end_x": 430, "end_y": 500, "duration_ms": 200, "target_window": "Paint"}
+                }
+            ]
+            return steps_desc, tool_calls
+
+        # Rule 2: Launch app AND type text (e.g. "Open Notepad and type Hello SPR Saathi")
         match_launch_type = re.search(
             r"(?:open|launch|start)\s+([a-zA-Z0-9_\-\.]+)\s+and\s+(?:type|write|enter)\s+(.+)",
             task,
@@ -54,7 +131,7 @@ class RuleBasedPlanner(BasePlanner):
             ]
             return steps_desc, tool_calls
 
-        # Rule 2: Just launch app (e.g. "Open Notepad")
+        # Rule 3: Just launch app (e.g. "Open Notepad")
         match_launch = re.search(r"^(?:open|launch|start)\s+([a-zA-Z0-9_\-\.]+)$", task, re.IGNORECASE)
         if match_launch:
             app_raw = match_launch.group(1).strip()
@@ -69,7 +146,7 @@ class RuleBasedPlanner(BasePlanner):
             ]
             return steps_desc, tool_calls
 
-        # Rule 3: Just type text (e.g. "type Hello World")
+        # Rule 4: Just type text (e.g. "type Hello World")
         match_type = re.search(r"^(?:type|write|enter)\s+(.+)$", task, re.IGNORECASE)
         if match_type:
             text_val = match_type.group(1).strip()
@@ -83,7 +160,7 @@ class RuleBasedPlanner(BasePlanner):
             ]
             return steps_desc, tool_calls
 
-        # Fallback to model completion if no rules match (boundary integration)
+        # Fallback to model completion if no rules match
         try:
             response = await self.model_provider.generate_with_tools(task, tools=[])
             steps_desc = []

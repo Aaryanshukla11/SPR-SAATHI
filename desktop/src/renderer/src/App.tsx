@@ -29,6 +29,10 @@ interface AgentState {
   error_message: string | null
   computer_state?: {
     active_window: ActiveWindow | null
+    screen_width: number
+    screen_height: number
+    cursor_x: number
+    cursor_y: number
   } | null
 }
 
@@ -406,8 +410,8 @@ function App(): React.JSX.Element {
           </div>
         </section>
 
-        {/* Active Window Observation Card */}
-        {agentState.computer_state?.active_window && (
+        {/* Computer State Card */}
+        {agentState.computer_state && (
           <div 
             style={{ 
               background: 'var(--bg-card)', 
@@ -421,23 +425,29 @@ function App(): React.JSX.Element {
               animation: 'slide-in 0.2s ease-out'
             }}
           >
-            <div className="section-title">Active Window State</div>
+            <div className="section-title">Computer State</div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--color-text-secondary)' }}>Title:</span>
-              <span style={{ fontWeight: 600, maxWidth: '220px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={agentState.computer_state.active_window.title}>
-                {agentState.computer_state.active_window.title}
-              </span>
+              <span style={{ color: 'var(--color-text-secondary)' }}>Screen:</span>
+              <span style={{ fontWeight: 600 }}>{agentState.computer_state.screen_width} × {agentState.computer_state.screen_height}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--color-text-secondary)' }}>Process:</span>
-              <span style={{ fontFamily: 'monospace', color: 'var(--color-act)' }}>{agentState.computer_state.active_window.process}</span>
+              <span style={{ color: 'var(--color-text-secondary)' }}>Cursor:</span>
+              <span style={{ fontWeight: 600, color: 'var(--color-act)' }}>{agentState.computer_state.cursor_x}, {agentState.computer_state.cursor_y}</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--color-text-secondary)' }}>PID / Bounds:</span>
-              <span>
-                {agentState.computer_state.active_window.pid} ({agentState.computer_state.active_window.bounds.width}x{agentState.computer_state.active_window.bounds.height})
-              </span>
-            </div>
+            {agentState.computer_state.active_window && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>Active Window:</span>
+                  <span style={{ fontWeight: 600, maxWidth: '180px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={agentState.computer_state.active_window.title}>
+                    {agentState.computer_state.active_window.title}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>Process:</span>
+                  <span style={{ fontFamily: 'monospace' }}>{agentState.computer_state.active_window.process}</span>
+                </div>
+              </>
+            )}
           </div>
         )}
 

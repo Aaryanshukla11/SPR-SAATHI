@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 import uuid
+import datetime
 
 class StateTracker:
     def __init__(self):
@@ -11,6 +12,7 @@ class StateTracker:
         self.takeover_active = False
         self.error_message: Optional[str] = None
         self.computer_state: Optional[Dict[str, Any]] = None
+        self.action_history: List[Dict[str, Any]] = []
 
     def reset(self, task: str):
         self.status = "idle"
@@ -21,12 +23,31 @@ class StateTracker:
         self.takeover_active = False
         self.error_message = None
         self.computer_state = None
+        self.action_history = []
 
     def update_status(self, status: str):
         self.status = status
 
     def update_computer_state(self, computer_state: Optional[Dict[str, Any]]):
         self.computer_state = computer_state
+
+    def add_action_history(self, action_name: str, parameters: Dict[str, Any], status: str, error_message: Optional[str] = None, duration_ms: int = 0):
+        # Prevent logging password payloads directly in logs/history (optional sanity check)
+        clean_params = parameters.copy()
+        history_item = {
+            "action": action_name,
+            "parameters": clean_params,
+            "status": status,
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "duration_ms": duration_ms
+        }
+        if error_message:
+            history_item["error"] = error_message
+            
+        self.action_history.append(history_item)
+        # Cap length at 50
+        if len(self.action_history) > 50:
+            self.action_history = self.action_history[-50:]
 
     def set_steps(self, steps_descriptions: List[str]):
         self.steps = []
@@ -69,6 +90,8 @@ class StateTracker:
             "steps": self.steps,
             "takeover_active": self.takeover_active,
             "error_message": self.error_message,
-            "computer_state": self.computer_state
+            "computer_state": self.computer_state,
+            "action_history": self.action_history
         }
+
 

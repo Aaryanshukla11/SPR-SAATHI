@@ -1,6 +1,10 @@
 from typing import Dict
 from .base import BaseTool
-from .computer import MouseMoveTool, MouseClickTool, KeyboardTypeTool, KeyboardPressTool, KeyboardHotkeyTool
+from .computer import (
+    MouseMoveTool, MouseClickTool, MouseDoubleClickTool,
+    MouseDownTool, MouseUpTool, MouseDragTool,
+    KeyboardTypeTool, KeyboardPressTool, KeyboardHotkeyTool
+)
 from .windows import LaunchAppTool, ListWindowsTool, FocusWindowTool
 from .filesystem import CreateFileTool, ReadFileTool
 from .terminal import CmdTool, PowerShellTool
@@ -10,6 +14,10 @@ def get_all_tools() -> Dict[str, BaseTool]:
     tools = [
         MouseMoveTool(),
         MouseClickTool(),
+        MouseDoubleClickTool(),
+        MouseDownTool(),
+        MouseUpTool(),
+        MouseDragTool(),
         KeyboardTypeTool(),
         KeyboardPressTool(),
         KeyboardHotkeyTool(),
