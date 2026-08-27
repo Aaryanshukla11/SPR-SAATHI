@@ -62,12 +62,53 @@ function App(): React.JSX.Element {
   
   // Permission levels per category
   const [permissions, setPermissions] = useState<Record<string, 'allow' | 'deny' | 'prompt'>>({
-    computer: 'prompt',
-    windows: 'allow',
+    mouse: 'prompt',
+    keyboard: 'prompt',
+    applications: 'prompt',
     filesystem: 'prompt',
-    terminal: 'prompt',
-    browser: 'allow'
+    browser: 'prompt',
+    terminal: 'deny',
+    powershell: 'deny'
   })
+
+  // Specific application overrides settings
+  const [appPermissions, setAppPermissions] = useState<Record<string, 'allow' | 'deny' | 'prompt'>>({})
+
+  // Audit Logs
+  interface AuditLogItem {
+    timestamp: string
+    task_id: string
+    request_id: string
+    scope: string
+    resource: string
+    action: string
+    decision: string
+    source: string
+  }
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([])
+
+  const fetchAuditLogs = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/permissions/audit`)
+      if (res.ok) {
+        const logs = await res.json()
+        setAuditLogs(logs)
+      }
+    } catch (e) {
+      console.error('Fetch audit logs error:', e)
+    }
+  }
+
+  // Poll audit logs when settings panel is open
+  useEffect(() => {
+    if (showSettings && port !== null) {
+      fetchAuditLogs()
+      const interval = setInterval(fetchAuditLogs, 4000)
+      return () => clearInterval(interval)
+    }
+    return undefined
+  }, [showSettings, port])
 
   // Agent Loop & Task State
   const [agentState, setAgentState] = useState<AgentState>({
@@ -124,9 +165,17 @@ function App(): React.JSX.Element {
               setAgentState(data.payload.state)
             }
             if (data.payload?.policies) {
-              setPermissions(data.payload.policies)
+              setPermissions(data.payload.policies.policies || {})
+              setAppPermissions(data.payload.policies.app_policies || {})
             }
             addFeedItem('observe', data.message, timestamp)
+            break
+          case 'permission.updated':
+            if (data.payload?.policies) {
+              setPermissions(data.payload.policies.policies || {})
+              setAppPermissions(data.payload.policies.app_policies || {})
+            }
+            fetchAuditLogs()
             break
           case 'observe':
             setAgentState((prev) => ({ ...prev, status: 'observing' }))
@@ -340,13 +389,51 @@ function App(): React.JSX.Element {
     setPermissions((prev) => ({ ...prev, [scope]: level }))
     if (port === null) return
     try {
-      await fetch(`http://127.0.0.1:${port}/api/config/permission`, {
-        method: 'POST',
+      await fetch(`http://127.0.0.1:${port}/api/permissions/${scope}`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, level })
+        body: JSON.stringify({ level })
       })
+      fetchAuditLogs()
     } catch (e) {
       console.error('Config permission error:', e)
+    }
+  }
+
+  const handleAppPermissionChange = async (appId: string, level: 'allow' | 'deny' | 'prompt') => {
+    setAppPermissions((prev) => ({ ...prev, [appId]: level }))
+    if (port === null) return
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/permissions/application/${appId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level })
+      })
+      fetchAuditLogs()
+    } catch (e) {
+      console.error('Config app permission error:', e)
+    }
+  }
+
+  const handleAddAppOverride = async (appId: string) => {
+    if (!appId.trim()) return
+    await handleAppPermissionChange(appId, 'prompt')
+  }
+
+  const handleDeleteAppOverride = async (appId: string) => {
+    setAppPermissions((prev) => {
+      const copy = { ...prev }
+      delete copy[appId]
+      return copy
+    })
+    if (port === null) return
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/permissions/application/${appId}`, {
+        method: 'DELETE'
+      })
+      fetchAuditLogs()
+    } catch (e) {
+      console.error('Delete app override error:', e)
     }
   }
 
@@ -534,14 +621,14 @@ function App(): React.JSX.Element {
               </div>
 
               {/* Permission Policy overrides */}
-              <div className="permissions-grid" style={{ marginTop: '8px' }}>
-                <div className="section-title" style={{ fontSize: '10px' }}>Broker Policies</div>
+              <div className="permissions-grid" style={{ marginTop: '12px' }}>
+                <div className="section-title" style={{ fontSize: '11px' }}>🛡️ Scope Policies</div>
                 {Object.keys(permissions).map((scope) => (
-                  <div key={scope} className="permission-row">
-                    <span style={{ textTransform: 'capitalize' }}>{scope}:</span>
+                  <div key={scope} className="permission-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0' }}>
+                    <span style={{ textTransform: 'capitalize', fontSize: '11px' }}>{scope}:</span>
                     <select
                       className="settings-select"
-                      style={{ padding: '2px 4px', fontSize: '11px' }}
+                      style={{ padding: '2px 4px', fontSize: '11px', borderRadius: '4px' }}
                       value={permissions[scope]}
                       onChange={(e) => handlePermissionChange(scope, e.target.value as any)}
                     >
@@ -551,6 +638,82 @@ function App(): React.JSX.Element {
                     </select>
                   </div>
                 ))}
+              </div>
+
+              {/* Application Overrides */}
+              <div className="app-overrides-section" style={{ marginTop: '16px', borderTop: '1px solid var(--border-glass)', paddingTop: '10px' }}>
+                <div className="section-title" style={{ fontSize: '11px' }}>🖥️ Application Rules</div>
+                {Object.keys(appPermissions).map((appId) => (
+                  <div key={appId} className="permission-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0' }}>
+                    <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>{appId}</span>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      <select
+                        className="settings-select"
+                        style={{ padding: '2px 4px', fontSize: '11px', borderRadius: '4px' }}
+                        value={appPermissions[appId]}
+                        onChange={(e) => handleAppPermissionChange(appId, e.target.value as any)}
+                      >
+                        <option value="allow">Allow</option>
+                        <option value="prompt">Prompt</option>
+                        <option value="deny">Deny</option>
+                      </select>
+                      <button 
+                        style={{ background: 'transparent', border: 'none', color: 'var(--color-danger)', cursor: 'pointer', fontSize: '11px' }}
+                        onClick={() => handleDeleteAppOverride(appId)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                
+                {/* Add new app override */}
+                <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+                  <input 
+                    id="newAppIdInput"
+                    placeholder="e.g. discord.exe"
+                    style={{ flex: 1, padding: '2px 6px', fontSize: '11px', background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '4px', color: 'var(--color-text)' }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const target = e.currentTarget
+                        handleAddAppOverride(target.value)
+                        target.value = ''
+                      }
+                    }}
+                  />
+                  <button 
+                    className="btn btn-secondary"
+                    style={{ padding: '2px 8px', fontSize: '11px' }}
+                    onClick={() => {
+                      const input = document.getElementById('newAppIdInput') as HTMLInputElement
+                      if (input) {
+                        handleAddAppOverride(input.value)
+                        input.value = ''
+                      }
+                    }}
+                  >
+                    + Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Audit Logs */}
+              <div className="audit-log-section" style={{ marginTop: '16px', borderTop: '1px solid var(--border-glass)', paddingTop: '10px' }}>
+                <div className="section-title" style={{ fontSize: '11px' }}>📝 Security Audit Trail</div>
+                <div style={{ maxHeight: '100px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                  {auditLogs.length === 0 ? (
+                    <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)', fontStyle: 'italic' }}>No security events logged.</div>
+                  ) : (
+                    auditLogs.slice(-5).reverse().map((log, idx) => (
+                      <div key={idx} style={{ fontSize: '10px', background: 'rgba(255,255,255,0.02)', padding: '4px', borderRadius: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>{log.resource} ({log.scope})</span>
+                        <span style={{ color: log.decision.includes('allow') ? 'var(--color-success)' : 'var(--color-danger)', fontWeight: 600 }}>
+                          {log.decision.toUpperCase()}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </>
           )}

@@ -21,7 +21,7 @@ from agent.models.api import ApiModelProvider
 # Initialize core modules
 state_tracker = StateTracker()
 policy_manager = PolicyManager()
-permission_broker = PermissionBroker(policy_manager)
+permission_broker = PermissionBroker(policy_manager, state_tracker)
 takeover_manager = TakeoverManager()
 
 # Default to API model (Gemini)
@@ -60,15 +60,23 @@ async def broadcast_event(event: Dict[str, Any]):
 
 # Register broker callback to prompt via WS
 async def on_permission_prompt(request_id: str, tool_name: str, arguments: Dict[str, Any]):
+    # Extract user-friendly prompt reasons
+    action_desc = f"Use tool '{tool_name}'"
+    reason_desc = "Required to complete your requested task."
+    
     await broadcast_event({
         "event_type": "permission_required",
-        "timestamp": uvicorn.config.datetime.utcnow().isoformat() + "Z" if hasattr(uvicorn, "config") else "",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "task_id": state_tracker.task_id,
         "message": f"Tool '{tool_name}' requires permission to run.",
         "payload": {
             "request_id": request_id,
             "tool_name": tool_name,
-            "arguments": arguments
+            "arguments": arguments,
+            "scope": tool_name,
+            "resource": tool_name,
+            "action": action_desc,
+            "reason": reason_desc
         }
     })
 
@@ -84,6 +92,7 @@ agent_loop = AgentLoop(
 )
 
 # Pydantic Schemas matching the shared contracts
+import datetime
 class StartTaskRequest(BaseModel):
     task: str
 
@@ -97,6 +106,9 @@ class ModelConfigRequest(BaseModel):
 
 class PolicyConfigRequest(BaseModel):
     scope: str
+    level: str  # "allow" | "deny" | "prompt"
+
+class ScopeUpdate(BaseModel):
     level: str  # "allow" | "deny" | "prompt"
 
 @app.get("/api/state")
@@ -122,7 +134,7 @@ async def take_control():
     state_tracker.takeover_active = True
     await broadcast_event({
         "event_type": "takeover",
-        "timestamp": "",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "task_id": state_tracker.task_id,
         "message": "User took control. AI execution paused.",
         "payload": {"takeover_active": True}
@@ -135,12 +147,74 @@ async def release_control():
     state_tracker.takeover_active = False
     await broadcast_event({
         "event_type": "takeover",
-        "timestamp": "",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "task_id": state_tracker.task_id,
         "message": "User released control. AI resuming execution...",
         "payload": {"takeover_active": False}
     })
     return {"status": "resumed"}
+
+# Permissions REST endpoints matching Requirement 18
+@app.get("/api/permissions")
+async def get_all_permissions_api():
+    return policy_manager.get_all_policies()
+
+@app.put("/api/permissions/{scope}")
+async def update_scope_permission_api(scope: str, req: ScopeUpdate):
+    lvl = req.level.lower().strip()
+    if lvl not in ["allow", "deny", "prompt"]:
+        raise HTTPException(status_code=400, detail="Invalid policy level. Choose 'allow', 'deny', or 'prompt'")
+    policy_manager.update_policy(scope, lvl)
+    # Broadcast configuration update to the UI
+    await broadcast_event({
+        "event_type": "permission.updated",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "task_id": state_tracker.task_id,
+        "message": f"Global policy for scope '{scope}' updated to '{lvl}'.",
+        "payload": {"policies": policy_manager.get_all_policies()}
+    })
+    return {"status": "policy_updated", "scope": scope, "level": lvl}
+
+@app.put("/api/permissions/application/{app_id}")
+async def update_app_permission_api(app_id: str, req: ScopeUpdate):
+    lvl = req.level.lower().strip()
+    if lvl not in ["allow", "deny", "prompt"]:
+        raise HTTPException(status_code=400, detail="Invalid policy level. Choose 'allow', 'deny', or 'prompt'")
+    policy_manager.update_app_policy(app_id, lvl)
+    await broadcast_event({
+        "event_type": "permission.updated",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "task_id": state_tracker.task_id,
+        "message": f"App override policy for '{app_id}' updated to '{lvl}'.",
+        "payload": {"policies": policy_manager.get_all_policies()}
+    })
+    return {"status": "app_policy_updated", "app_id": app_id, "level": lvl}
+
+@app.delete("/api/permissions/application/{app_id}")
+async def delete_app_permission_api(app_id: str):
+    policy_manager.delete_app_policy(app_id)
+    await broadcast_event({
+        "event_type": "permission.updated",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "task_id": state_tracker.task_id,
+        "message": f"App override policy for '{app_id}' deleted.",
+        "payload": {"policies": policy_manager.get_all_policies()}
+    })
+    return {"status": "app_policy_deleted", "app_id": app_id}
+
+@app.post("/api/permissions/request/{request_id}/decision")
+async def respond_permission_api(request_id: str, req: ScopeUpdate):
+    decision = req.level.lower().strip()
+    if decision not in ["allow", "deny"]:
+        raise HTTPException(status_code=400, detail="Decision must be 'allow' or 'deny'")
+    success = permission_broker.resolve_permission(request_id, decision)
+    if not success:
+        raise HTTPException(status_code=404, detail="Permission request ID not found or already resolved.")
+    return {"status": "resolved"}
+
+@app.get("/api/permissions/audit")
+async def get_audit_trail_api():
+    return permission_broker.audit_trail
 
 @app.post("/api/permission/respond")
 async def respond_permission(req: PermissionResponse):

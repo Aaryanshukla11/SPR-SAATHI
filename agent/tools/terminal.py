@@ -57,7 +57,7 @@ class PowerShellTool(BaseTool):
 
     @property
     def category(self) -> str:
-        return "terminal"
+        return "powershell"
 
     @property
     def parameters(self) -> Dict[str, Any]:
