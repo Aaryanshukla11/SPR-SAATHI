@@ -34,6 +34,14 @@ class PolicyManager:
         3. Global Scope Category Rule
         4. Default Scope Category
         """
+        # Resolve category mapping
+        resolved_category = category
+        if category == "computer":
+            if tool_name.startswith("mouse_"):
+                resolved_category = "mouse"
+            elif tool_name.startswith("keyboard_"):
+                resolved_category = "keyboard"
+
         # 1. Check Specific Application Rule
         if tool_name in ["launch_app", "focus_window"]:
             # Extract application executable name
@@ -53,7 +61,13 @@ class PolicyManager:
                         app_name = f"{app_name}.exe"
                         
                 for key, val in self.app_policies.items():
+                    # Direct check
                     if key.lower().strip() == app_name or key.lower().replace(".exe", "") == app_name.replace(".exe", ""):
+                        return val
+                    # Check substring match for Registry Display Names (e.g. key = "Blender", app_name = "blender.exe")
+                    normalized_key = key.lower().replace(".exe", "").strip()
+                    normalized_app = app_name.replace(".exe", "").strip()
+                    if normalized_key and normalized_app and (normalized_key in normalized_app or normalized_app in normalized_key):
                         return val
 
         # 2. Check Specific Tool Rule
@@ -61,11 +75,11 @@ class PolicyManager:
             return self.policies[tool_name]
 
         # 3. Check Global Category Scope Rule
-        if category in self.policies:
-            return self.policies[category]
+        if resolved_category in self.policies:
+            return self.policies[resolved_category]
 
         # 4. Fallback Default Category
-        return DEFAULT_POLICIES.get(category, "prompt")
+        return DEFAULT_POLICIES.get(resolved_category, "prompt")
 
     def update_policy(self, scope: str, level: str):
         if level in ["allow", "deny", "prompt"]:

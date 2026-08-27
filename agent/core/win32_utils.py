@@ -497,3 +497,78 @@ def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[int],
         arguments["y"] = abs_y
         return True, abs_x, abs_y, None
 
+def get_installed_applications():
+    """
+    Queries the Windows registry keys to retrieve the list of installed software.
+    """
+    import sys
+    if sys.platform != "win32":
+        # Mock applications list for testing on non-Windows platforms
+        return [
+            {"name": "Docker Desktop", "version": "4.71.0", "publisher": "Docker Inc.", "key": "docker"},
+            {"name": "Blender", "version": "5.0.0", "publisher": "Blender Foundation", "key": "blender"},
+            {"name": "Google Chrome", "version": "120.0.0", "publisher": "Google LLC", "key": "chrome"},
+            {"name": "Microsoft Edge", "version": "151.0", "publisher": "Microsoft Corporation", "key": "edge"}
+        ]
+        
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    apps = []
+    reg_paths = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+    ]
+    
+    seen_names = set()
+    
+    for hive, path in reg_paths:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                num_subkeys = winreg.QueryInfoKey(key)[0]
+                for i in range(num_subkeys):
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        with winreg.OpenKey(key, subkey_name) as subkey:
+                            try:
+                                display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                if not display_name or display_name in seen_names:
+                                    continue
+                                
+                                # Skip updates, patches or system dependencies to clean up the list
+                                if "update" in display_name.lower() or "patch" in display_name.lower():
+                                    continue
+                                
+                                version = ""
+                                try:
+                                    version = winreg.QueryValueEx(subkey, "DisplayVersion")[0]
+                                except:
+                                    pass
+                                
+                                publisher = ""
+                                try:
+                                    publisher = winreg.QueryValueEx(subkey, "Publisher")[0]
+                                except:
+                                    pass
+                                
+                                seen_names.add(display_name)
+                                apps.append({
+                                    "name": display_name,
+                                    "version": version,
+                                    "publisher": publisher,
+                                    "key": subkey_name
+                                })
+                            except (OSError, IndexError):
+                                pass
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+            
+    # Sort alphabetically
+    apps.sort(key=lambda x: x["name"].lower())
+    return apps
+

@@ -7,6 +7,7 @@ from .planner import BasePlanner
 from .executor import ToolExecutor
 from agent.control.takeover import TakeoverManager
 from agent.core import win32_utils
+from agent.models.base import validate_model_decision
 
 class AgentLoop:
     def __init__(
@@ -25,6 +26,13 @@ class AgentLoop:
         
         self._cancellation_requested = False
         self._running_task: Optional[asyncio.Task] = None
+        self._user_response_future: Optional[asyncio.Future] = None
+        
+        # Safety Limits (Requirement 26)
+        self.max_steps = 50
+        self.max_retries_per_step = 3
+        self.max_replans = 10
+        self.max_task_duration_seconds = 600.0  # 10 minutes
 
     async def _emit_event(self, event_type: str, message: str, payload: Optional[Dict[str, Any]] = None):
         if self.broadcast_callback:
@@ -44,188 +52,263 @@ class AgentLoop:
         self._cancellation_requested = False
         self.state_tracker.reset(task_description)
         self._running_task = asyncio.create_task(self._loop(task_description))
+        asyncio.create_task(self._emit_event("task.created", f"Started task: {task_description}"))
 
     def stop_task(self):
         self._cancellation_requested = True
-        self.state_tracker.update_status("stopped")
+        self.state_tracker.update_status("cancelled")
         self.state_tracker.cancel_all_steps()
         
         # Release any mouse buttons held by the AI on cancel
         win32_utils.release_all_buttons()
         
+        # Resolve any waiting user future
+        if self._user_response_future and not self._user_response_future.done():
+            self._user_response_future.cancel()
+            
+        if hasattr(self.executor, "permission_broker"):
+            self.executor.permission_broker.cancel_all_pending()
+
         if self._running_task and not self._running_task.done():
             self._running_task.cancel()
-        asyncio.create_task(self._emit_event("stop", "Task was cancelled/stopped by user."))
+        asyncio.create_task(self._emit_event("task.cancelled", "Task was cancelled/stopped by user."))
 
     async def _loop(self, task: str):
+        start_task_time = time.time()
+        consecutive_replans = 0
+        step_attempts: Dict[str, int] = {}
+        
+        # Generate initial high-level plan (Requirement 12)
+        self.state_tracker.update_status("planning")
+        await self._emit_event("task.planning", "Decomposing goal into plan checklist...")
+        initial_steps = self.planner.create_high_level_plan(task)
+        self.state_tracker.set_structured_steps(initial_steps)
+        await self._emit_event("task.plan_updated", "High-level plan generated.", {"steps": initial_steps})
+        await asyncio.sleep(0.5)
+
         try:
-            # OBSERVE
-            self.state_tracker.update_status("observing")
-            await self._emit_event("observe", "Observing current computer state...")
-            
-            # Fetch real window state and screen metrics
-            active_window = win32_utils.get_active_window_details()
-            screen_w, screen_h = win32_utils.get_screen_size()
-            cursor_x, cursor_y = win32_utils.get_cursor_position()
-            
-            computer_state = {
-                "active_window": active_window,
-                "screen_width": screen_w,
-                "screen_height": screen_h,
-                "cursor_x": cursor_x,
-                "cursor_y": cursor_y
-            }
-            self.state_tracker.update_computer_state(computer_state)
-            
-            if active_window:
-                observation = f"Active window: title='{active_window['title']}', process='{active_window['process']}', pid={active_window['pid']}. Screen: {screen_w}x{screen_h}. Cursor: ({cursor_x},{cursor_y})"
-            else:
-                observation = f"No active window detected (Desktop focused). Screen: {screen_w}x{screen_h}. Cursor: ({cursor_x},{cursor_y})"
-                
-            await self._emit_event("observe", f"State observed: {observation}", computer_state)
-            await asyncio.sleep(0.5)
+            while True:
+                # 1. Bounded Safety Limits check (Requirement 26)
+                elapsed_time = time.time() - start_task_time
+                if elapsed_time > self.max_task_duration_seconds:
+                    raise TimeoutError(f"Task exceeded maximum duration limit of {self.max_task_duration_seconds}s.")
+                    
+                if self.state_tracker.attempt_count >= self.max_steps:
+                    raise RuntimeError(f"Task aborted: exceeded maximum step count limit of {self.max_steps}.")
 
-            # PLAN
-            self.state_tracker.update_status("planning")
-            await self._emit_event("plan", "Creating execution plan...")
-            steps_desc, tool_calls = await self.planner.create_plan(task, observation)
-            self.state_tracker.set_steps(steps_desc)
-            await self._emit_event("plan", f"Plan created with {len(steps_desc)} steps.", {"steps": steps_desc})
-            await asyncio.sleep(0.5)
+                if consecutive_replans >= self.max_replans:
+                    raise RuntimeError(f"Task aborted: exceeded consecutive replans limit of {self.max_replans}.")
 
-            # Execution loop
-            for i, step in enumerate(self.state_tracker.steps):
-                # 1. Takeover Check
+                # 2. Takeover Check (Requirement 18)
                 if self.takeover_manager.is_takeover_active:
-                    self.state_tracker.update_status("takeover")
-                    
-                    # Immediately release any mouse buttons currently held by the AI on takeover
+                    self.state_tracker.update_status("paused")
                     win32_utils.release_all_buttons()
+                    await self._emit_event("task.paused", "Takeover active: execution paused by user.")
                     
-                    await self._emit_event("takeover", "Human takeover active. Pausing agent loop and releasing inputs.")
+                    # Wait until user releases control
                     await self.takeover_manager.wait_if_takeover()
                     
-                    # Wake up: Re-observe and Re-plan
-                    self.state_tracker.update_status("observing")
-                    await self._emit_event("observe", "Resuming from takeover. Re-observing computer state...")
+                    self.state_tracker.update_status("running")
+                    await self._emit_event("task.resumed", "Takeover released: resuming execution loop...")
                     
+                    # Re-observe state immediately after takeover
                     active_window = win32_utils.get_active_window_details()
+                    visible_windows = win32_utils.list_desktop_windows()
                     screen_w, screen_h = win32_utils.get_screen_size()
                     cursor_x, cursor_y = win32_utils.get_cursor_position()
                     
-                    computer_state = {
+                    obs = {
                         "active_window": active_window,
-                        "screen_width": screen_w,
-                        "screen_height": screen_h,
-                        "cursor_x": cursor_x,
-                        "cursor_y": cursor_y
+                        "visible_windows": visible_windows,
+                        "screen": {"width": screen_w, "height": screen_h},
+                        "cursor": {"x": cursor_x, "y": cursor_y}
                     }
-                    self.state_tracker.update_computer_state(computer_state)
+                    self.state_tracker.update_computer_state(obs)
                     
-                    if active_window:
-                        observation = f"Active window: title='{active_window['title']}', process='{active_window['process']}'. Screen: {screen_w}x{screen_h}. Cursor: ({cursor_x},{cursor_y})"
-                    else:
-                        observation = f"No active window. Screen: {screen_w}x{screen_h}. Cursor: ({cursor_x},{cursor_y})"
-                    
+                    # Force replanning
                     self.state_tracker.update_status("planning")
-                    await self._emit_event("plan", "Re-planning task after human takeover...")
-                    steps_desc, tool_calls = await self.planner.create_plan(task, observation)
-                    self.state_tracker.set_steps(steps_desc)
-                    await self._emit_event("plan", "New plan created.", {"steps": steps_desc})
-                    await asyncio.sleep(0.5)
-                    return await self._loop(task)
+                    await self._emit_event("task.planning", "Re-planning high-level checklist after takeover...")
+                    new_steps = self.planner.create_high_level_plan(task)
+                    self.state_tracker.set_structured_steps(new_steps)
+                    await self._emit_event("task.plan_updated", "Re-planned checklist.", {"steps": new_steps})
+                    consecutive_replans += 1
+                    continue
 
-                # 2. Cancellation Check
                 if self._cancellation_requested:
-                    self.state_tracker.update_status("stopped")
+                    self.state_tracker.update_status("cancelled")
                     return
 
-                tool_call = tool_calls[i] if i < len(tool_calls) else None
-                step_id = step["step_id"]
+                # 3. OBSERVE (Requirement 7 & 8)
+                self.state_tracker.update_status("running")
+                active_window = win32_utils.get_active_window_details()
+                visible_windows = win32_utils.list_desktop_windows()
+                screen_w, screen_h = win32_utils.get_screen_size()
+                cursor_x, cursor_y = win32_utils.get_cursor_position()
+                
+                obs = {
+                    "active_window": active_window,
+                    "visible_windows": visible_windows,
+                    "screen": {"width": screen_w, "height": screen_h},
+                    "cursor": {"x": cursor_x, "y": cursor_y}
+                }
+                self.state_tracker.update_computer_state(obs)
+                
+                obs_message = f"Active window: '{active_window.get('title') if active_window else 'Desktop'}'"
+                await self._emit_event("task.observation", f"Observed state: {obs_message}", obs)
 
-                # 3. Check permission & Act
-                self.state_tracker.start_step(step_id, tool_call)
-                self.state_tracker.update_status("checking_permission")
-                await self._emit_event("status_change", f"Checking permissions for {step_id}...")
+                # 4. SELECT NEXT ACTION / DECISION (Requirement 11 & 12)
+                model = self.planner.model_provider
+                await self._emit_event("status_change", "Thinking...")
+                
+                decision = await model.decide_action(
+                    goal=task,
+                    plan=self.state_tracker.steps,
+                    observation=obs,
+                    recent_history=self.state_tracker.action_history
+                )
+                
+                # 5. VALIDATION (Requirement 3 & 10)
+                is_valid, err_msg = validate_model_decision(decision)
+                if not is_valid:
+                    raise ValueError(f"Model returned invalid decision: {err_msg}")
+                    
+                await self._emit_event("task.decision", f"Selected action type: {decision['decision_type']}", decision)
 
-                if tool_call:
-                    tool_name = tool_call["tool_name"]
-                    args = tool_call["arguments"]
-                    call_id = tool_call["call_id"]
+                # 6. DECISION ROUTER
+                dtype = decision["decision_type"]
+                
+                # --- final decision ---
+                if dtype == "final":
+                    self.state_tracker.update_status("completed")
+                    await self._emit_event("task.completed", decision.get("message", "Task finished successfully!"))
+                    return
+                    
+                # --- replan decision ---
+                elif dtype == "replan":
+                    self.state_tracker.update_status("planning")
+                    await self._emit_event("task.replanning", f"Replanning requested: {decision.get('reason')}")
+                    
+                    new_steps = self.planner.create_high_level_plan(task)
+                    self.state_tracker.set_structured_steps(new_steps)
+                    await self._emit_event("task.plan_updated", "Plan re-decomposed.", {"steps": new_steps})
+                    consecutive_replans += 1
+                    await asyncio.sleep(0.5)
+                    continue
+                    
+                # --- ask_user decision ---
+                elif dtype == "ask_user":
+                    question = decision.get("question", "Agent requested clarification.")
+                    self.state_tracker.update_status("waiting_user")
+                    await self._emit_event("task.waiting_user", f"Question: {question}", {"question": question})
+                    
+                    # Create future to wait for user answer
+                    self._user_response_future = asyncio.get_running_loop().create_future()
+                    try:
+                        # Default user answer timeout is 60s (Requirement 20)
+                        user_text = await asyncio.wait_for(self._user_response_future, timeout=60.0)
+                        
+                        # Add user answer to history memory
+                        self.state_tracker.add_action_history("ask_user", {"question": question}, "completed", error_message=f"User answer: {user_text}")
+                        await self._emit_event("status_change", f"Resuming task with answer: {user_text}")
+                    except asyncio.TimeoutError:
+                        self._user_response_future = None
+                        raise TimeoutError(f"User did not answer within 60 seconds.")
+                    continue
+                    
+                # --- wait decision ---
+                elif dtype == "wait":
+                    wait_seconds = float(decision.get("duration_seconds", 2.0))
+                    # Avoid unbounded wait
+                    wait_seconds = min(wait_seconds, 15.0)
+                    
+                    await self._emit_event("status_change", f"Waiting for {wait_seconds} seconds...")
+                    await asyncio.sleep(wait_seconds)
+                    continue
 
-                    # Typed Action Protocol Event Emit
-                    await self._emit_event("action_requested", f"Action requested: {tool_name}", {"tool_call": tool_call})
+                # --- tool_call decision ---
+                elif dtype == "tool_call":
+                    tool_name = decision.get("tool_name", "")
+                    args = decision.get("arguments", {})
+                    call_id = f"step_{self.state_tracker.attempt_count + 1}"
+                    
+                    # Find active step to check progress checklist
+                    active_step_id = None
+                    for step in self.state_tracker.steps:
+                        if step["status"] == "pending":
+                            active_step_id = step["step_id"]
+                            break
+                    if not active_step_id and self.state_tracker.steps:
+                        active_step_id = self.state_tracker.steps[-1]["step_id"]
 
-                    # Coordinate Validation & Resolution Check BEFORE permission broker
+                    # 1. Action Validation (Requirement 10)
                     from agent.core.action_validator import validate_action
                     is_valid, err_msg = validate_action(tool_name, args)
                     if not is_valid:
                         err_text = f"Action validation rejected: {err_msg}"
-                        await self._emit_event("action_failed", err_text)
-                        result = {
-                            "success": False,
-                            "error": err_text,
-                            "output": ""
-                        }
-                    else:
-                        await self._emit_event("action_validated", f"Action validated: {tool_name}")
-                        await self._emit_event("permission_check", f"Evaluating security rules for {tool_name}")
-
-                        # Act
-                        self.state_tracker.update_status("acting")
-                        await self._emit_event("act", f"Executing step: {step['description']}", {"tool_call": tool_call})
-                        await self._emit_event("action_started", f"Executing tool: {tool_name}")
-                        
-                        start_time = time.time()
-                        result = await self.executor.execute_action(tool_name, args, call_id)
-                        duration_ms = int((time.time() - start_time) * 1000)
-
-                        # Update action history
-                        self.state_tracker.add_action_history(
-                            tool_name, 
-                            args, 
-                            "completed" if result["success"] else "failed", 
-                            result.get("error"), 
-                            duration_ms
-                        )
-
-                        if result["success"]:
-                            await self._emit_event("action_completed", f"Action completed: {tool_name}", {"duration_ms": duration_ms})
-                        else:
-                            await self._emit_event("action_failed", f"Action failed: {result['error']}", {"duration_ms": duration_ms})
-
-                    # 4. Verify
-                    self.state_tracker.update_status("verifying")
-                    await self._emit_event("verify", f"Verifying execution of step: {step_id}...")
+                        await self._emit_event("tool.failed", err_text, {"tool": tool_name})
+                        # Fail-safe record to history
+                        self.state_tracker.add_action_history(tool_name, args, "failed", err_text, 0)
+                        raise ValueError(err_text)
                     
-                    # Update state after action
+                    # 2. Loop Protection Stuck Limits (Requirement 27)
+                    recent_actions = self.state_tracker.action_history[-3:]
+                    if len(recent_actions) >= 3 and all(a.get("action") == tool_name and a.get("parameters") == args and a.get("status") == "failed" for a in recent_actions):
+                        raise RuntimeError(f"Loop protection triggered: Repeated execution failures for tool '{tool_name}' with arguments {args}.")
+
+                    # 3. Check permission & Act
+                    self.state_tracker.update_status("waiting_permission")
+                    await self._emit_event("tool.requested", f"Action request: {tool_name}", {"tool_call": {"tool_name": tool_name, "arguments": args, "call_id": call_id}})
+                    
+                    if active_step_id:
+                        self.state_tracker.start_step(active_step_id, {"tool_name": tool_name, "arguments": args, "call_id": call_id})
+                    
+                    self.state_tracker.update_status("acting")
+                    await self._emit_event("tool.started", f"Acting: executing {tool_name}")
+                    
+                    start_time = time.time()
+                    result = await self.executor.execute_action(tool_name, args, call_id)
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    self.state_tracker.add_action_history(
+                        tool_name, 
+                        args, 
+                        "completed" if result["success"] else "failed", 
+                        result.get("error"), 
+                        duration_ms
+                    )
+
+                    # 4. Verify & Re-observe (Requirement 13)
+                    self.state_tracker.update_status("verifying")
+                    
+                    # re-observe current active window process details
                     active_window = win32_utils.get_active_window_details()
+                    visible_windows = win32_utils.list_desktop_windows()
                     screen_w, screen_h = win32_utils.get_screen_size()
                     cursor_x, cursor_y = win32_utils.get_cursor_position()
                     
-                    computer_state = {
+                    obs = {
                         "active_window": active_window,
-                        "screen_width": screen_w,
-                        "screen_height": screen_h,
-                        "cursor_x": cursor_x,
-                        "cursor_y": cursor_y
+                        "visible_windows": visible_windows,
+                        "screen": {"width": screen_w, "height": screen_h},
+                        "cursor": {"x": cursor_x, "y": cursor_y}
                     }
-                    self.state_tracker.update_computer_state(computer_state)
+                    self.state_tracker.update_computer_state(obs)
 
-                    # Deterministic Verification for key tools
+                    # Deterministic validation for launch/focus (Requirement 13)
                     if result["success"]:
                         if tool_name == "launch_app":
                             target_name = args.get("app_name", "").lower()
+                            clean_name = target_name.replace(".exe", "")
                             matched = False
-                            for _ in range(6):
+                            for _ in range(12):
                                 windows = win32_utils.list_desktop_windows()
-                                if any(target_name in w["process"].lower() or target_name.replace(".exe", "") in w["process"].lower() for w in windows):
+                                if any(clean_name in w["process"].lower() or clean_name in w["title"].lower() for w in windows):
                                     matched = True
                                     break
                                 await asyncio.sleep(0.5)
                             if not matched:
                                 result["success"] = False
-                                result["error"] = f"Verification failed: Process '{target_name}' was not detected on the desktop after launching."
+                                result["error"] = f"Verification failed: Process/window for '{target_name}' was not detected after launching."
                                 
                         elif tool_name == "focus_window":
                             title_sub = args.get("title_substring", "").lower()
@@ -249,37 +332,36 @@ class AgentLoop:
                                 await asyncio.sleep(0.5)
                             if not matched:
                                 result["success"] = False
-                                result["error"] = "Verification failed: Target window could not be focused or found on the desktop."
+                                result["error"] = "Verification failed: Target window was not focused."
 
+                    # Verify outcome
                     if result["success"]:
-                        self.state_tracker.complete_step(step_id)
+                        await self._emit_event("tool.completed", f"Action completed: {tool_name}", {"duration_ms": duration_ms})
+                        if active_step_id:
+                            self.state_tracker.complete_step(active_step_id)
+                        consecutive_replans = 0 # reset replans on success
                     else:
-                        self.state_tracker.fail_step(step_id)
-                        self.state_tracker.update_status("error")
-                        self.state_tracker.error_message = result["error"]
-                        
-                        # Release any buttons currently held by the AI on error
-                        win32_utils.release_all_buttons()
-                        
-                        await self._emit_event("error", f"Task execution failed at step {step_id}: {result['error']}")
-                        return
-                else:
-                    self.state_tracker.complete_step(step_id)
-                
-                await asyncio.sleep(0.5)
+                        await self._emit_event("tool.failed", f"Action failed: {result['error']}", {"duration_ms": duration_ms})
+                        if active_step_id:
+                            self.state_tracker.fail_step(active_step_id)
+                            
+                        # Increment step retry attempt counts (Requirement 14)
+                        step_id = active_step_id or "generic"
+                        step_attempts[step_id] = step_attempts.get(step_id, 0) + 1
+                        if step_attempts[step_id] >= self.max_retries_per_step:
+                            raise RuntimeError(f"Step '{step_id}' failed consecutively {self.max_retries_per_step} times. Aborting task.")
 
-            # Completion
-            self.state_tracker.update_status("completed")
-            await self._emit_event("task_completed", "Autonomous task completed successfully!")
+                    # Increment total attempts count
+                    self.state_tracker.attempt_count += 1
+                    await asyncio.sleep(0.5)
 
         except asyncio.CancelledError:
-            self.state_tracker.update_status("stopped")
+            self.state_tracker.update_status("cancelled")
             self.state_tracker.cancel_all_steps()
             win32_utils.release_all_buttons()
+            await self._emit_event("task.cancelled", "Autonomous task cancelled.")
         except Exception as e:
-            self.state_tracker.update_status("error")
+            self.state_tracker.update_status("failed")
             self.state_tracker.error_message = str(e)
             win32_utils.release_all_buttons()
-            await self._emit_event("error", f"An unexpected error occurred in loop: {str(e)}")
-
-
+            await self._emit_event("task.failed", f"Autonomous task failed: {str(e)}", {"error": str(e)})

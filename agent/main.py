@@ -6,6 +6,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Import agent components
 from agent.core.state import StateTracker
 from agent.core.planner import RuleBasedPlanner
@@ -30,10 +33,37 @@ planner = RuleBasedPlanner(current_model_provider)
 tools = get_all_tools()
 executor = ToolExecutor(tools, permission_broker)
 
+from contextlib import asynccontextmanager
+
+async def monitor_and_dock_appbar():
+    from agent.core.appbar import register_appbar
+    # Wait for the Electron window to load and register the appbar
+    for _ in range(60): # try for 30 seconds
+        try:
+            if register_appbar("SPR SAATHI", side='right', width_ratio=0.25):
+                print("[AppBar] Registered successfully", flush=True)
+                break
+        except Exception as e:
+            print(f"[AppBar] Register failed: {e}", flush=True)
+        await asyncio.sleep(0.5)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: start loop search task
+    appbar_task = asyncio.create_task(monitor_and_dock_appbar())
+    yield
+    # Shutdown: cancel task and unregister appbar
+    appbar_task.cancel()
+    try:
+        from agent.core.appbar import unregister_appbar
+        unregister_appbar()
+    except Exception:
+        pass
+
 # We will instantiate the AgentLoop when the server starts
 agent_loop: Optional[AgentLoop] = None
 
-app = FastAPI(title="SPR SAATHI Backend")
+app = FastAPI(title="SPR SAATHI Backend", lifespan=lifespan)
 
 # Allow CORS for Electron UI
 app.add_middleware(
@@ -111,6 +141,10 @@ class PolicyConfigRequest(BaseModel):
 class ScopeUpdate(BaseModel):
     level: str  # "allow" | "deny" | "prompt"
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
 @app.get("/api/state")
 async def get_state():
     return state_tracker.to_dict()
@@ -174,6 +208,11 @@ async def update_scope_permission_api(scope: str, req: ScopeUpdate):
         "payload": {"policies": policy_manager.get_all_policies()}
     })
     return {"status": "policy_updated", "scope": scope, "level": lvl}
+
+@app.get("/api/config/installed_apps")
+async def get_installed_apps_endpoint():
+    from agent.core.win32_utils import get_installed_applications
+    return get_installed_applications()
 
 @app.put("/api/permissions/application/{app_id}")
 async def update_app_permission_api(app_id: str, req: ScopeUpdate):
@@ -243,10 +282,15 @@ async def configure_model(req: ModelConfigRequest):
 async def get_permissions():
     return policy_manager.get_all_policies()
 
-@app.post("/api/config/permission")
-async def configure_permission(req: PolicyConfigRequest):
-    policy_manager.update_policy(req.scope, req.level)
-    return {"status": "policy_updated", "scope": req.scope, "level": req.level}
+class UserQuestionResponse(BaseModel):
+    response: str
+
+@app.post("/api/task/respond_question")
+async def respond_user_question(req: UserQuestionResponse):
+    if agent_loop and agent_loop._user_response_future and not agent_loop._user_response_future.done():
+        agent_loop._user_response_future.set_result(req.response)
+        return {"status": "resolved"}
+    raise HTTPException(status_code=400, detail="No active user prompt question found.")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -278,9 +322,8 @@ class CustomUvicornServer(uvicorn.Server):
         # We handle lifecycle from Electron, let's bypass custom signal handling that blocks on Windows
         pass
 
-    async def serve(self, sockets=None):
-        # Bind and setup
-        await self.startup(sockets=sockets)
+    async def startup(self, sockets=None):
+        await super().startup(sockets=sockets)
         
         # Extract actual bound port
         bound_port = None
@@ -293,10 +336,6 @@ class CustomUvicornServer(uvicorn.Server):
             print(f"PORT: {bound_port}", flush=True)
         else:
             print("PORT: FAILED", flush=True)
-            
-        if not self.should_exit:
-            await self.main_loop()
-        await self.shutdown()
 
 async def start_server():
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")

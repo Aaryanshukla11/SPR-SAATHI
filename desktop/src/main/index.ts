@@ -17,9 +17,13 @@ function startPythonProcess(): void {
   
   console.log(`[Main Process] Spawning Python process. Cwd: ${agentDir}, Script: ${mainPy}`)
   
+  const rootDir = path.resolve(agentDir, '..')
+  const env = { ...process.env, PYTHONPATH: rootDir }
+  
   // Use 'python' executable (we verified Python 3.13.7 is available in the environment)
   pyProc = spawn('python', ['-u', mainPy], {
     cwd: agentDir,
+    env: env,
     stdio: ['pipe', 'pipe', 'inherit']
   })
   
@@ -35,24 +39,47 @@ function startPythonProcess(): void {
   
   pyProc.on('error', (err) => {
     console.error('[Main Process] Failed to start Python agent:', err)
+    pyPort = -1
   })
   
   pyProc.on('close', (code) => {
     console.log(`[Main Process] Python agent exited with code ${code}`)
+    pyPort = -1
   })
+
+  // Set startup timeout (15 seconds)
+  const STARTUP_TIMEOUT_MS = 15000
+  setTimeout(() => {
+    if (pyPort === null) {
+      console.error(`[Main Process] Python backend startup timed out after ${STARTUP_TIMEOUT_MS}ms.`)
+      pyPort = -1
+      if (pyProc) {
+        console.log('[Main Process] Terminating timed-out Python process...')
+        pyProc.kill()
+      }
+    }
+  }, STARTUP_TIMEOUT_MS)
 }
 
 function createWindow(): void {
-  // Get screen bounds to dock to the right side (occupying ~30% width)
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize
-  const panelWidth = Math.max(350, Math.floor(width * 0.28)) // 28% of screen width
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const screenWidth = primaryDisplay.bounds.width
+  
+  // Calculate exactly 25% width of the monitor screen
+  const panelWidth = Math.floor(screenWidth * 0.25)
+  
+  // Use work area height so it docks nicely without overlap with the bottom Windows taskbar
+  const panelHeight = primaryDisplay.workArea.height
 
   // Create the browser window.
   mainWindow = new BrowserWindow({
     width: panelWidth,
-    height: height,
-    x: width - panelWidth,
+    height: panelHeight,
+    x: screenWidth - panelWidth,
     y: 0,
+    resizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
     show: false,
     autoHideMenuBar: true,
     title: 'SPR SAATHI',

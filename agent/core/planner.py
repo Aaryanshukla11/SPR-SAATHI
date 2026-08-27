@@ -12,8 +12,43 @@ class BasePlanner(ABC):
         """Returns a list of step descriptions and a list of structured tool calls for those steps."""
         pass
 
+    def create_high_level_plan(self, task: str) -> List[Dict[str, Any]]:
+        """Generates a high-level progress plan representing the goal checklist."""
+        pass
+
 
 class RuleBasedPlanner(BasePlanner):
+    def create_high_level_plan(self, task: str) -> List[Dict[str, Any]]:
+        task_lower = task.lower().strip()
+        steps = []
+        if "paint" in task_lower:
+            steps = [
+                {"id": "step_1", "description": "Launch Paint", "status": "pending"},
+                {"id": "step_2", "description": "Wait and focus window for Paint", "status": "pending"},
+                {"id": "step_3", "description": "Draw walls, roof, and door", "status": "pending"},
+                {"id": "step_4", "description": "Verify drawing complete", "status": "pending"}
+            ]
+        elif "notepad" in task_lower:
+            steps = [
+                {"id": "step_1", "description": "Launch Notepad", "status": "pending"},
+                {"id": "step_2", "description": "Focus Notepad window", "status": "pending"}
+            ]
+            if "type" in task_lower or "write" in task_lower:
+                steps.append({"id": "step_3", "description": "Type the requested text", "status": "pending"})
+            if "save" in task_lower:
+                steps.append({"id": "step_4", "description": "Save file as hello.txt on Desktop", "status": "pending"})
+            steps.append({"id": "step_5", "description": "Verify file saved successfully", "status": "pending"})
+        else:
+            steps = [
+                {"id": "step_1", "description": f"Decompose task: {task}", "status": "pending"}
+            ]
+        
+        # Ensure all steps have step_id
+        for step in steps:
+            if "step_id" not in step:
+                step["step_id"] = step["id"]
+        return steps
+
     async def create_plan(self, task: str, observation: str) -> Tuple[List[str], List[Dict[str, Any]]]:
         task_lower = task.lower().strip()
         
