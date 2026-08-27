@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PermissionSchemas",
+  "description": "Schemas for permission configurations, checks, and user prompts in SPR SAATHI",
+  "definitions": {
+    "PermissionLevel": {
+      "type": "string",
+      "enum": ["allow", "deny", "prompt"]
+    },
+    "PermissionPolicy": {
+      "type": "object",
+      "properties": {
+        "scope": { "type": "string", "description": "Can be global, a category (e.g. filesystem), or a specific tool name" },
+        "level": { "$ref": "#/definitions/PermissionLevel" }
+      },
+      "required": ["scope", "level"]
+    },
+    "PermissionRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string" },
+        "tool_name": { "type": "string" },
+        "arguments": { "type": "object" },
+        "message": { "type": "string" }
+      },
+      "required": ["request_id", "tool_name", "arguments", "message"]
+    },
+    "PermissionResponse": {
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string" },
+        "decision": { "type": "string", "enum": ["allow", "deny"] }
+      },
+      "required": ["request_id", "decision"]
+    }
+  }
+}

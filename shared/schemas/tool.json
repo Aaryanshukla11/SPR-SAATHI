@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ToolSchemas",
+  "description": "Schemas for tools definition, call, and results in SPR SAATHI",
+  "definitions": {
+    "ToolDefinition": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "parameters": { "type": "object" },
+        "category": { "type": "string" }
+      },
+      "required": ["name", "description", "parameters", "category"]
+    },
+    "ToolCall": {
+      "type": "object",
+      "properties": {
+        "call_id": { "type": "string" },
+        "tool_name": { "type": "string" },
+        "arguments": { "type": "object" }
+      },
+      "required": ["call_id", "tool_name", "arguments"]
+    },
+    "ToolResult": {
+      "type": "object",
+      "properties": {
+        "call_id": { "type": "string" },
+        "success": { "type": "boolean" },
+        "output": { "type": "string" },
+        "error": { "type": ["string", "null"] }
+      },
+      "required": ["call_id", "success", "output"]
+    }
+  }
+}

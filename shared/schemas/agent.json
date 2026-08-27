@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AgentSchemas",
+  "description": "Schemas for representing agent state and lifecycle events in SPR SAATHI",
+  "definitions": {
+    "StepStatus": {
+      "type": "string",
+      "enum": ["pending", "running", "completed", "failed", "cancelled"]
+    },
+    "AgentStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "observing",
+        "planning",
+        "checking_permission",
+        "acting",
+        "verifying",
+        "takeover",
+        "stopped",
+        "completed",
+        "error"
+      ]
+    },
+    "PlannedStep": {
+      "type": "object",
+      "properties": {
+        "step_id": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "$ref": "#/definitions/StepStatus" },
+        "tool_call": { "type": ["object", "null"] }
+      },
+      "required": ["step_id", "description", "status"]
+    },
+    "ActiveWindow": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "process": { "type": "string" },
+        "pid": { "type": "integer" },
+        "bounds": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "width": { "type": "integer" },
+            "height": { "type": "integer" }
+          },
+          "required": ["x", "y", "width", "height"]
+        }
+      },
+      "required": ["title", "process", "pid", "bounds"]
+    },
+    "AgentState": {
+      "type": "object",
+      "properties": {
+        "status": { "$ref": "#/definitions/AgentStatus" },
+        "current_task": { "type": ["string", "null"] },
+        "task_id": { "type": ["string", "null"] },
+        "active_step_id": { "type": ["string", "null"] },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/PlannedStep" }
+        },
+        "takeover_active": { "type": "boolean" },
+        "error_message": { "type": ["string", "null"] },
+        "computer_state": {
+          "type": ["object", "null"],
+          "properties": {
+            "active_window": { "$ref": "#/definitions/ActiveWindow" }
+          }
+        }
+      },
+      "required": ["status", "current_task", "task_id", "active_step_id", "steps", "takeover_active"]
+    },
+    "AgentEvent": {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "status_change",
+            "observe",
+            "plan",
+            "permission_required",
+            "act",
+            "verify",
+            "takeover",
+            "stop",
+            "log",
+            "error",
+            "task_completed"
+          ]
+        },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "task_id": { "type": ["string", "null"] },
+        "message": { "type": "string" },
+        "payload": { "type": "object" }
+      },
+      "required": ["event_type", "timestamp", "message"]
+    }
+  }
+}
+
