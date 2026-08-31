@@ -274,6 +274,17 @@ def release_all_buttons():
 
 # --- Windows Management Injection ---
 
+def _attach_thread_to_desktop():
+    if not IS_WINDOWS:
+        return
+    try:
+        # DESKTOP_ALL_ACCESS = 0x01FF
+        hdesk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x01FF)
+        if hdesk:
+            ctypes.windll.user32.SetThreadDesktop(hdesk)
+    except Exception:
+        pass
+
 def get_active_window_details() -> Optional[Dict[str, Any]]:
     if not IS_WINDOWS:
         return {
@@ -283,6 +294,7 @@ def get_active_window_details() -> Optional[Dict[str, Any]]:
             "bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080}
         }
         
+    _attach_thread_to_desktop()
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     if not hwnd:
         return None
@@ -320,7 +332,10 @@ def get_active_window_details() -> Optional[Dict[str, Any]]:
     }
 
 if IS_WINDOWS:
-    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    from ctypes import wintypes
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    ctypes.windll.user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+    ctypes.windll.user32.EnumWindows.restype = wintypes.BOOL
 else:
     WNDENUMPROC = None
 
@@ -336,45 +351,51 @@ def list_desktop_windows() -> List[Dict[str, Any]]:
             }
         ]
         
+    _attach_thread_to_desktop()
     windows_list = []
     
     def enum_callback(hwnd, lparam):
-        if ctypes.windll.user32.IsWindowVisible(hwnd):
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-                title = buf.value
-                
-                pid = ctypes.c_ulong()
-                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                
-                rect = RECT()
-                ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                
-                process_name = "unknown"
-                if pid.value:
-                    import psutil
-                    try:
-                        process_name = psutil.Process(pid.value).name()
-                    except Exception:
-                        pass
-                
-                w = rect.right - rect.left
-                h = rect.bottom - rect.top
-                if w > 0 and h > 0:
-                    windows_list.append({
-                        "hwnd": hwnd,
-                        "title": title,
-                        "process": process_name,
-                        "pid": pid.value,
-                        "bounds": {
-                            "x": int(rect.left),
-                            "y": int(rect.top),
-                            "width": int(w),
-                            "height": int(h)
-                        }
-                    })
+        try:
+            if ctypes.windll.user32.IsWindowVisible(hwnd):
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                    title = buf.value.encode('ascii', 'ignore').decode('ascii').strip()
+                    if not title or title.lower() in ("popuphost", "program manager", "default ime", "msctfime ui"):
+                        return True
+                    
+                    pid = ctypes.c_ulong()
+                    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    
+                    rect = RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    
+                    process_name = "unknown"
+                    if pid.value:
+                        import psutil
+                        try:
+                            process_name = psutil.Process(pid.value).name()
+                        except Exception:
+                            pass
+                    
+                    w = rect.right - rect.left
+                    h = rect.bottom - rect.top
+                    if w > 0 and h > 0:
+                        windows_list.append({
+                            "hwnd": hwnd,
+                            "title": title,
+                            "process": process_name,
+                            "pid": pid.value,
+                            "bounds": {
+                                "x": int(rect.left),
+                                "y": int(rect.top),
+                                "width": int(w),
+                                "height": int(h)
+                            }
+                        })
+        except Exception:
+            pass
         return True
 
     cb = WNDENUMPROC(enum_callback)
@@ -499,11 +520,11 @@ def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[int],
 
 def get_installed_applications():
     """
-    Queries the Windows registry keys to retrieve the list of installed software.
+    Retrieves the complete list of installed applications, system utilities,
+    Start Menu programs, and AppX store apps on the system.
     """
     import sys
     if sys.platform != "win32":
-        # Mock applications list for testing on non-Windows platforms
         return [
             {"name": "Docker Desktop", "version": "4.71.0", "publisher": "Docker Inc.", "key": "docker"},
             {"name": "Blender", "version": "5.0.0", "publisher": "Blender Foundation", "key": "blender"},
@@ -517,13 +538,46 @@ def get_installed_applications():
         return []
 
     apps = []
+    seen_names = set()
+
+    # 1. Start Menu Shortcuts (.lnk files) from All Users and Current User
+    start_menu_paths = []
+    prog_data = os.environ.get("ProgramData")
+    if prog_data:
+        start_menu_paths.append(os.path.join(prog_data, r"Microsoft\Windows\Start Menu\Programs"))
+    app_data = os.environ.get("APPDATA")
+    if app_data:
+        start_menu_paths.append(os.path.join(app_data, r"Microsoft\Windows\Start Menu\Programs"))
+
+    for sm_root in start_menu_paths:
+        if not os.path.exists(sm_root):
+            continue
+        for root, dirs, files in os.walk(sm_root):
+            for f in files:
+                if f.lower().endswith(".lnk"):
+                    app_name = f[:-4].strip()
+                    norm = app_name.lower()
+                    if norm in seen_names:
+                        continue
+                    if "uninstall" in norm or "help" in norm or "documentation" in norm or "read me" in norm:
+                        continue
+                    
+                    seen_names.add(norm)
+                    rel_folder = os.path.basename(root)
+                    publisher = rel_folder if rel_folder.lower() not in ("programs", "start menu") else "Installed Application"
+                    apps.append({
+                        "name": app_name,
+                        "version": "Shortcut",
+                        "publisher": publisher,
+                        "key": os.path.join(root, f)
+                    })
+
+    # 2. Windows Registry Uninstall Keys (HKLM 64-bit, HKLM 32-bit, HKCU)
     reg_paths = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
     ]
-    
-    seen_names = set()
     
     for hive, path in reg_paths:
         try:
@@ -535,30 +589,34 @@ def get_installed_applications():
                         with winreg.OpenKey(key, subkey_name) as subkey:
                             try:
                                 display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
-                                if not display_name or display_name in seen_names:
+                                if not display_name:
                                     continue
                                 
-                                # Skip updates, patches or system dependencies to clean up the list
-                                if "update" in display_name.lower() or "patch" in display_name.lower():
+                                display_name = display_name.strip()
+                                norm = display_name.lower()
+                                if norm in seen_names:
+                                    continue
+                                
+                                if norm.startswith("kb") or "security update" in norm or "hotfix" in norm:
                                     continue
                                 
                                 version = ""
                                 try:
                                     version = winreg.QueryValueEx(subkey, "DisplayVersion")[0]
-                                except:
+                                except Exception:
                                     pass
                                 
                                 publisher = ""
                                 try:
                                     publisher = winreg.QueryValueEx(subkey, "Publisher")[0]
-                                except:
+                                except Exception:
                                     pass
                                 
-                                seen_names.add(display_name)
+                                seen_names.add(norm)
                                 apps.append({
                                     "name": display_name,
-                                    "version": version,
-                                    "publisher": publisher,
+                                    "version": str(version),
+                                    "publisher": str(publisher),
                                     "key": subkey_name
                                 })
                             except (OSError, IndexError):
@@ -567,7 +625,84 @@ def get_installed_applications():
                         pass
         except OSError:
             pass
-            
+
+    # 3. Windows Store / Modern AppX Packages
+    appx_reg = (winreg.HKEY_CURRENT_USER, r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages")
+    try:
+        with winreg.OpenKey(appx_reg[0], appx_reg[1]) as key:
+            num = winreg.QueryInfoKey(key)[0]
+            for i in range(num):
+                try:
+                    pkg_name = winreg.EnumKey(key, i)
+                    parts = pkg_name.split("_")
+                    if parts:
+                        raw = parts[0]
+                        if "." in raw:
+                            prefix, app_part = raw.split(".", 1)
+                            if len(prefix) <= 16 or any(c.isdigit() for c in prefix):
+                                clean_name = app_part
+                            else:
+                                clean_name = raw
+                        else:
+                            clean_name = raw
+                            
+                        clean_name = clean_name.replace("Microsoft.", "").replace("Windows.", "").replace("Desktop", " Desktop")
+                        norm = clean_name.lower()
+                        if (
+                            not clean_name or 
+                            len(clean_name) < 3 or 
+                            clean_name[0].isdigit() or
+                            norm in seen_names or 
+                            norm.startswith("microsoftwindows") or
+                            norm.startswith("microsoft.ui") or
+                            norm.startswith("microsoft.vclibs") or
+                            norm.startswith("microsoft.net") or
+                            any(token in norm for token in ["cbs", "xaml", "brokerplugin", "services.store", "appinstaller", "syncengine", "filons", "taskbar", "voiess", "speion", "inpapp", "livtop", "tasbar"]) or
+                            (len(clean_name) > 25 and "-" in clean_name and any(c.isdigit() for c in clean_name))
+                        ):
+                            continue
+                            
+                        seen_names.add(norm)
+                        apps.append({
+                            "name": clean_name,
+                            "version": parts[1] if len(parts) > 1 else "AppX",
+                            "publisher": "Microsoft Corporation" if "microsoft" in pkg_name.lower() else "Windows Store",
+                            "key": pkg_name
+                        })
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 4. Standard Core Windows Tools
+    core_tools = [
+        ("Calculator", "System Tool", "Microsoft Corporation", "calc.exe"),
+        ("Notepad", "System Tool", "Microsoft Corporation", "notepad.exe"),
+        ("Paint", "System Tool", "Microsoft Corporation", "mspaint.exe"),
+        ("File Explorer", "System Tool", "Microsoft Corporation", "explorer.exe"),
+        ("Command Prompt", "System Tool", "Microsoft Corporation", "cmd.exe"),
+        ("Windows PowerShell", "System Tool", "Microsoft Corporation", "powershell.exe"),
+        ("Task Manager", "System Tool", "Microsoft Corporation", "taskmgr.exe"),
+        ("Snipping Tool", "System Tool", "Microsoft Corporation", "snippingtool.exe"),
+        ("Registry Editor", "System Tool", "Microsoft Corporation", "regedit.exe"),
+        ("Control Panel", "System Tool", "Microsoft Corporation", "control.exe"),
+        ("Windows Settings", "System Tool", "Microsoft Corporation", "ms-settings:"),
+        ("Device Manager", "System Tool", "Microsoft Corporation", "devmgmt.msc"),
+        ("Disk Management", "System Tool", "Microsoft Corporation", "diskmgmt.msc"),
+        ("Services", "System Tool", "Microsoft Corporation", "services.msc"),
+        ("Resource Monitor", "System Tool", "Microsoft Corporation", "resmon.exe"),
+        ("Character Map", "System Tool", "Microsoft Corporation", "charmap.exe")
+    ]
+    for name, ver, pub, key in core_tools:
+        if name.lower() not in seen_names:
+            seen_names.add(name.lower())
+            apps.append({
+                "name": name,
+                "version": ver,
+                "publisher": pub,
+                "key": key
+            })
+
     # Sort alphabetically
     apps.sort(key=lambda x: x["name"].lower())
     return apps

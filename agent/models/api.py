@@ -151,44 +151,13 @@ class ApiModelProvider(BaseModelProvider):
         observation: Dict[str, Any], 
         recent_history: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        from agent.core.schema import get_tools_schema
-        tools_list = get_tools_schema()
-        
-        system_instruction = (
-            "You are SPR SAATHI, an autonomous computer use agent operating a Windows system.\n"
-            "Your goal is to solve the user's requested task by selecting appropriate tools step-by-step.\n"
-            "You must output ONLY a valid JSON object matching the ModelDecision schema below.\n"
-            "Do NOT include any markdown block notation (like ```json), thoughts, description, or text before/after the JSON.\n\n"
-            "=== SCHEMA ===\n"
-            "The JSON object must contain 'decision_type' (one of: 'tool_call', 'final', 'replan', 'ask_user', 'wait') and parameters based on the type:\n"
-            "- If 'decision_type' == 'tool_call': Must provide 'tool_name' (string) and 'arguments' (object containing parameters matching tool schema).\n"
-            "- If 'decision_type' == 'final': Must provide 'message' (string describing task completion result).\n"
-            "- If 'decision_type' == 'replan': Must provide 'reason' (string explaining why planning checklist requires update).\n"
-            "- If 'decision_type' == 'ask_user': Must provide 'question' (string asking user for input or clarification).\n"
-            "- If 'decision_type' == 'wait': Must provide 'duration_seconds' (number, positive).\n\n"
-            "=== GUIDELINES ===\n"
-            "1. Only call tools that are listed in the catalog below. Do not invent tools.\n"
-            "2. Never repeat the exact same failing action twice. If a tool output shows an error, try another argument or tool, or ask the user.\n"
-            "3. First launch the application, then make sure it is focused, then type or click inside it.\n"
-            "4. Respect desktop window bounds. When typing, ensure target application is focused in the foreground active window.\n"
-            "5. Once the goal is completed, output a 'final' decision immediately. Do not keep running.\n"
+        from agent.core.context import build_compact_context
+        system_instruction, user_content = build_compact_context(
+            goal=goal,
+            plan=plan,
+            observation=observation,
+            recent_history=recent_history
         )
-
-        user_content = (
-            f"=== USER GOAL ===\n{goal}\n\n"
-            f"=== CHECKLIST PLAN ===\n{json.dumps(plan, indent=2)}\n\n"
-            f"=== CURRENT OBSERVATION ===\n{json.dumps(observation, indent=2)}\n\n"
-            f"=== HISTORY OF EXECUTED ACTIONS ===\n"
-        )
-        
-        for idx, act in enumerate(recent_history):
-            status = act.get("status")
-            err = act.get("error") or act.get("error_message")
-            err_str = f" | Error: {err}" if err else ""
-            user_content += f"{idx+1}. Tool: {act.get('action')} | Args: {json.dumps(act.get('parameters'))} | Status: {status}{err_str}\n"
-            
-        user_content += f"\n=== AVAILABLE TOOLS ===\n{json.dumps(tools_list, indent=2)}\n\n"
-        user_content += "Decide the next step. Return ONLY the JSON object. Do not include thoughts."
 
         try:
             content = await self._make_api_call(system_instruction, user_content)

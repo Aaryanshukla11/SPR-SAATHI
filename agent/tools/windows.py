@@ -41,7 +41,15 @@ class LaunchAppTool(BaseTool):
             # Try launching
             # Expand environment variables like %SystemRoot%
             expanded_name = os.path.expandvars(app_name)
-            subprocess.Popen(expanded_name, shell=True)
+            if hasattr(os, "startfile"):
+                try:
+                    os.startfile(expanded_name)
+                except Exception:
+                    subprocess.Popen(expanded_name, shell=True)
+            else:
+                subprocess.Popen(expanded_name, shell=True)
+            import time
+            time.sleep(1.0)
             msg = f"Application '{app_name}' launched successfully."
             return {
                 "call_id": "",
@@ -145,16 +153,15 @@ class FocusWindowTool(BaseTool):
             matched_title = ""
             
             for w in windows:
-                # Match title
-                title_match = title_sub and title_sub in w["title"].lower()
-                # Match process
-                proc_match = proc_name and proc_name in w["process"].lower()
+                # Match title or process
+                title_match = bool(title_sub and (title_sub in w["title"].lower() or title_sub in w["process"].lower()))
+                proc_match = bool(proc_name and (proc_name in w["process"].lower() or proc_name in w["title"].lower()))
                 
-                if (title_sub and proc_name and title_match and proc_match) or \
+                if (title_sub and proc_name and (title_match or proc_match)) or \
                    (title_sub and not proc_name and title_match) or \
                    (proc_name and not title_sub and proc_match):
                     target_hwnd = w["hwnd"]
-                    matched_title = w["title"]
+                    matched_title = w["title"] or w["process"]
                     break
                     
             if not target_hwnd:

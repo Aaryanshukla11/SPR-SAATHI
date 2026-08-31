@@ -490,18 +490,24 @@ function App(): React.JSX.Element {
     }
   }, [port, reconnectAttempts])
 
-  // Fetch installed applications when port resolved
-  useEffect(() => {
+  // Fetch installed applications helper
+  const fetchInstalledApps = async () => {
     if (port === null) return
-    fetch(`http://127.0.0.1:${port}/api/config/installed_apps`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          setInstalledApps(data)
-        }
-      })
-      .catch((e) => console.error('[Renderer] Error fetching installed apps:', e))
-  }, [port])
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/config/installed_apps`)
+      const data = await res.json()
+      if (Array.isArray(data)) {
+        setInstalledApps(data)
+      }
+    } catch (e) {
+      console.error('[Renderer] Error fetching installed apps:', e)
+    }
+  }
+
+  // Fetch installed applications when port resolved or when tab changes to security
+  useEffect(() => {
+    fetchInstalledApps()
+  }, [port, activeTab])
 
   // Sync Feed Scrolling
   useEffect(() => {
@@ -1296,35 +1302,82 @@ function App(): React.JSX.Element {
         ) : activeTab === 'security' ? (
           <>
             {/* Security & Applications Access Control Panel */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               
               {/* Scope Policies (Global) */}
-              <section className="settings-panel" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '12px' }}>
-                <div className="section-title" style={{ marginBottom: '8px' }}>Scope Access Policies</div>
-                <div className="permissions-grid" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {Object.keys(permissions).map((scope) => (
-                    <div key={scope} className="permission-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ textTransform: 'capitalize', fontSize: '11px', fontWeight: 600 }}>{scope}:</span>
-                      <select
-                        className="settings-select"
-                        style={{ padding: '2px 4px', fontSize: '11px', borderRadius: '4px' }}
-                        value={permissions[scope]}
-                        onChange={(e) => handlePermissionChange(scope, e.target.value as any)}
+              <section className="settings-panel" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '12px 14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div className="section-title" style={{ margin: 0 }}>Scope Access Policies</div>
+                  <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)', background: 'rgba(255, 255, 255, 0.05)', padding: '2px 8px', borderRadius: '10px' }}>
+                    {Object.keys(permissions).length} Scopes Active
+                  </div>
+                </div>
+                <div className="permissions-grid" style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '185px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {Object.keys(permissions).map((scope) => {
+                    const scopeIcons: Record<string, string> = {
+                      mouse: '🖱️',
+                      keyboard: '⌨️',
+                      applications: '📦',
+                      filesystem: '📁',
+                      browser: '🌐',
+                      terminal: '💻',
+                      powershell: '⚡',
+                      windows: '🪟',
+                      computer: '🖥️'
+                    }
+                    const val = permissions[scope]
+                    return (
+                      <div 
+                        key={scope} 
+                        className="permission-row" 
+                        style={{ 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          alignItems: 'center',
+                          padding: '5px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(255, 255, 255, 0.015)',
+                          border: '1px solid rgba(255, 255, 255, 0.025)',
+                          transition: 'background 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.015)'}
                       >
-                        <option value="allow">Allow</option>
-                        <option value="prompt">Prompt</option>
-                        <option value="deny">Deny</option>
-                      </select>
-                    </div>
-                  ))}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '12px', opacity: 0.85 }}>{scopeIcons[scope.toLowerCase()] || '🛡️'}</span>
+                          <span style={{ textTransform: 'capitalize', fontSize: '11.5px', fontWeight: 600, color: '#e2e8f0' }}>{scope}</span>
+                        </div>
+                        <select
+                          className="settings-select"
+                          style={{ 
+                            padding: '3px 8px', 
+                            fontSize: '10.5px', 
+                            fontWeight: 600,
+                            borderRadius: '6px', 
+                            background: val === 'allow' ? 'rgba(16, 185, 129, 0.12)' : val === 'deny' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+                            color: val === 'allow' ? '#34d399' : val === 'deny' ? '#f87171' : '#fbbf24',
+                            border: `1px solid ${val === 'allow' ? 'rgba(16, 185, 129, 0.25)' : val === 'deny' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(245, 158, 11, 0.25)'}`,
+                            cursor: 'pointer',
+                            outline: 'none'
+                          }}
+                          value={val}
+                          onChange={(e) => handlePermissionChange(scope, e.target.value as any)}
+                        >
+                          <option value="allow" style={{ background: '#15171f', color: '#34d399' }}>Allow</option>
+                          <option value="prompt" style={{ background: '#15171f', color: '#fbbf24' }}>Prompt</option>
+                          <option value="deny" style={{ background: '#15171f', color: '#f87171' }}>Deny</option>
+                        </select>
+                      </div>
+                    )
+                  })}
                 </div>
               </section>
 
               {/* Installed Applications access configuration */}
-              <section style={{ display: 'flex', flexDirection: 'column', flex: 1, background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '12px', overflow: 'hidden' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <section style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <div className="section-title" style={{ margin: 0 }}>Installed System Software</div>
-                  <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)' }}>
+                  <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)', background: 'rgba(255, 255, 255, 0.05)', padding: '2px 8px', borderRadius: '10px' }}>
                     {installedApps.length} Apps Found
                   </div>
                 </div>
@@ -1332,12 +1385,12 @@ function App(): React.JSX.Element {
                 {/* Search Box */}
                 <input
                   type="text"
-                  placeholder="Search applications (e.g. Blender, Edge...)"
+                  placeholder="Search applications (e.g. mspaint, calc, cmd, Blender...)"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   style={{
                     width: '100%',
-                    padding: '6px 10px',
+                    padding: '7px 10px',
                     background: 'var(--bg-input)',
                     border: '1px solid var(--border-glass)',
                     borderRadius: '6px',
@@ -1349,92 +1402,149 @@ function App(): React.JSX.Element {
                 />
 
                 {/* Scrollable list */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1, paddingRight: '4px' }}>
-                  {installedApps.length === 0 ? (
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', textAlign: 'center', padding: '20px' }}>
-                      Loading installed system applications...
-                    </div>
-                  ) : (
-                    (() => {
-                      const filtered = installedApps.filter(app => 
-                        app.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                        (app.publisher && app.publisher.toLowerCase().includes(searchQuery.toLowerCase()))
-                      )
-                      if (filtered.length === 0) {
-                        return (
-                          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', textAlign: 'center', padding: '20px' }}>
-                            No matching applications found.
-                          </div>
-                        )
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '260px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {(() => {
+                    const DEFAULT_SYSTEM_APPS = [
+                      { name: 'Paint', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'mspaint.exe' },
+                      { name: 'Calculator', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'calc.exe' },
+                      { name: 'Notepad', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'notepad.exe' },
+                      { name: 'File Explorer', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'explorer.exe' },
+                      { name: 'Command Prompt', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'cmd.exe' },
+                      { name: 'Windows PowerShell', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'powershell.exe' },
+                      { name: 'Task Manager', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'taskmgr.exe' },
+                      { name: 'Snipping Tool', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'snippingtool.exe' },
+                      { name: 'Registry Editor', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'regedit.exe' },
+                      { name: 'Control Panel', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'control.exe' },
+                      { name: 'Windows Settings', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'ms-settings:' },
+                      { name: 'Device Manager', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'devmgmt.msc' },
+                      { name: 'Services', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'services.msc' },
+                      { name: 'Resource Monitor', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'resmon.exe' },
+                      { name: 'Character Map', version: 'System Tool', publisher: 'Microsoft Corporation', key: 'charmap.exe' }
+                    ]
+
+                    const merged = [...installedApps]
+                    const seen = new Set(merged.map(a => (a.name || '').toLowerCase()))
+                    for (const def of DEFAULT_SYSTEM_APPS) {
+                      if (!seen.has(def.name.toLowerCase())) {
+                        seen.add(def.name.toLowerCase())
+                        merged.push(def)
                       }
-                      return filtered.map(app => {
-                        // Find active permission setting matching this app name
-                        const getAppRule = () => {
-                           const normApp = app.name.toLowerCase().trim()
-                           if (appPermissions[normApp]) return appPermissions[normApp]
-                           for (const k of Object.keys(appPermissions)) {
-                             const normKey = k.replace('.exe', '').trim()
-                             const normName = normApp.replace('.exe', '').trim()
-                             if (normKey && normName && (normKey.includes(normName) || normName.includes(normKey))) {
-                               return appPermissions[k]
-                             }
-                           }
-                           return 'prompt'
+                    }
+
+                    const query = searchQuery.toLowerCase().trim()
+                    const aliasMap: Record<string, string[]> = {
+                      mspaint: ['paint', 'mspaint', 'pbrush'],
+                      paint: ['mspaint', 'paint', 'pbrush'],
+                      calc: ['calculator', 'calc'],
+                      calculator: ['calc', 'calculator'],
+                      notepad: ['notepad', 'editor', 'txt'],
+                      cmd: ['command prompt', 'cmd', 'terminal'],
+                      powershell: ['windows powershell', 'powershell', 'pwsh'],
+                      explorer: ['file explorer', 'explorer'],
+                      taskmgr: ['task manager', 'taskmgr'],
+                      snip: ['snipping tool', 'snip'],
+                      regedit: ['registry editor', 'regedit'],
+                      control: ['control panel', 'control']
+                    }
+
+                    const filtered = merged.filter(app => {
+                      if (!query) return true
+                      const name = (app.name || '').toLowerCase()
+                      const pub = (app.publisher || '').toLowerCase()
+                      const key = (app.key || '').toLowerCase()
+
+                      // 1. Direct name, publisher, key match
+                      if (name.includes(query) || pub.includes(query) || key.includes(query)) return true
+
+                      // 2. Token match
+                      const tokens = query.split(/\s+/).filter(Boolean)
+                      if (tokens.length > 1 && tokens.every(t => name.includes(t) || pub.includes(t) || key.includes(t))) return true
+
+                      // 3. Alias dictionary matching
+                      for (const [trigger, matches] of Object.entries(aliasMap)) {
+                        if (query === trigger || query.includes(trigger) || trigger.includes(query)) {
+                          if (matches.some(m => name.includes(m) || key.includes(m))) return true
                         }
-                        const currentVal = getAppRule()
+                      }
 
-                        return (
-                          <div 
-                            key={app.key} 
-                            style={{ 
-                              display: 'flex', 
-                              justifyContent: 'space-between', 
-                              alignItems: 'center', 
-                              padding: '8px 10px', 
-                              background: 'rgba(255, 255, 255, 0.01)', 
-                              border: '1px solid rgba(255, 255, 255, 0.02)', 
-                              borderRadius: '6px',
-                              transition: 'border-color 0.2s ease'
-                            }}
-                            onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-glass)'}
-                            onMouseLeave={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.02)'}
-                          >
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxWidth: '65%' }}>
-                              <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#ffffff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={app.name}>
-                                {app.name}
-                              </span>
-                              <span style={{ fontSize: '9.5px', color: 'var(--color-text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {app.version ? `${app.version} | ` : ''}{app.publisher || 'Unknown Publisher'}
-                              </span>
-                            </div>
+                      return false
+                    }).sort((a, b) => a.name.localeCompare(b.name))
 
-                            <select
-                              className="settings-select"
-                              style={{ padding: '2px 4px', fontSize: '10.5px', borderRadius: '4px' }}
-                              value={currentVal}
-                              onChange={(e) => handleAppPermissionChange(app.name, e.target.value as any)}
-                            >
-                              <option value="allow">Allow</option>
-                              <option value="prompt">Prompt</option>
-                              <option value="deny">Deny</option>
-                            </select>
+                    if (filtered.length === 0) {
+                      return (
+                        <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', textAlign: 'center', padding: '20px' }}>
+                          No matching applications found for "{searchQuery}".
+                        </div>
+                      )
+                    }
+
+                    return filtered.map(app => {
+                      // Find active permission setting matching this app name
+                      const getAppRule = () => {
+                         const normApp = app.name.toLowerCase().trim()
+                         if (appPermissions[normApp]) return appPermissions[normApp]
+                         for (const k of Object.keys(appPermissions)) {
+                           const normKey = k.replace('.exe', '').trim()
+                           const normName = normApp.replace('.exe', '').trim()
+                           if (normKey && normName && (normKey.includes(normName) || normName.includes(normKey))) {
+                             return appPermissions[k]
+                           }
+                         }
+                         return 'prompt'
+                      }
+                      const currentVal = getAppRule()
+
+                      return (
+                        <div 
+                          key={app.key || app.name} 
+                          style={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            alignItems: 'center', 
+                            padding: '8px 10px', 
+                            background: 'rgba(255, 255, 255, 0.01)', 
+                            border: '1px solid rgba(255, 255, 255, 0.02)', 
+                            borderRadius: '6px',
+                            transition: 'border-color 0.2s ease'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-glass)'}
+                          onMouseLeave={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.02)'}
+                        >
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxWidth: '65%' }}>
+                            <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#ffffff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={app.name}>
+                              {app.name}
+                            </span>
+                            <span style={{ fontSize: '9.5px', color: 'var(--color-text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {app.version ? `${app.version} | ` : ''}{app.publisher || 'Unknown Publisher'}
+                            </span>
                           </div>
-                        )
-                      })
-                    })()
-                  )}
+
+                          <select
+                            className="settings-select"
+                            style={{ padding: '2px 4px', fontSize: '10.5px', borderRadius: '4px' }}
+                            value={currentVal}
+                            onChange={(e) => handleAppPermissionChange(app.name, e.target.value as any)}
+                          >
+                            <option value="allow">Allow</option>
+                            <option value="prompt">Prompt</option>
+                            <option value="deny">Deny</option>
+                          </select>
+                        </div>
+                      )
+                    })
+                  })()}
                 </div>
               </section>
 
               {/* Audit logs trail */}
-              <section className="settings-panel" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '12px' }}>
+              <section className="settings-panel" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '14px' }}>
                 <div className="section-title" style={{ marginBottom: '8px' }}>Security Audit Trail</div>
-                <div style={{ maxHeight: '80px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ maxHeight: '100px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   {auditLogs.length === 0 ? (
                     <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)', fontStyle: 'italic' }}>No security events logged.</div>
                   ) : (
-                    auditLogs.slice(-5).reverse().map((log, idx) => (
-                      <div key={idx} style={{ fontSize: '9.5px', background: 'rgba(255,255,255,0.02)', padding: '3px 6px', borderRadius: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                    auditLogs.slice(-10).reverse().map((log, idx) => (
+                      <div key={idx} style={{ fontSize: '9.5px', background: 'rgba(255,255,255,0.02)', padding: '4px 8px', borderRadius: '4px', display: 'flex', justifyContent: 'space-between' }}>
                         <span>{log.resource} ({log.scope})</span>
                         <span style={{ color: log.decision.includes('allow') ? 'var(--color-success)' : 'var(--color-danger)', fontWeight: 600 }}>
                           {log.decision.toUpperCase()}

@@ -30,7 +30,14 @@ async def run_phase3_integration():
         broker = PermissionBroker(pm, tracker)
         tools = get_all_tools()
         executor = ToolExecutor(tools, broker)
-        planner = RuleBasedPlanner(None)
+        from agent.models.api import ApiModelProvider
+        model = ApiModelProvider("Gemini 3.5 Flash")
+        
+        async def mock_decide_action(goal, plan, observation, recent_history):
+            return {"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}
+            
+        model.decide_action = mock_decide_action
+        planner = RuleBasedPlanner(model)
         
         from agent.control.takeover import TakeoverManager
         takeover_manager = TakeoverManager()
@@ -52,11 +59,16 @@ async def run_phase3_integration():
         
         loop.start_task("Open Notepad")
         
-        # Wait for task completion/failure
-        await asyncio.sleep(2.0)
+        # Poll for task failure
+        max_wait = 5.0
+        elapsed = 0.0
+        while tracker.status not in ["completed", "failed", "cancelled"] and elapsed < max_wait:
+            await asyncio.sleep(0.2)
+            elapsed += 0.2
+            
         print(f"Notepad task status: {tracker.status}, Error: {tracker.error_message}")
-        assert tracker.status == "error"
-        assert "Permission denied" in tracker.error_message
+        assert tracker.status == "failed"
+        assert any("Permission denied" in (a.get("error") or "") for a in tracker.action_history)
         print("Notepad launch blocked successfully!")
 
         # ----------------------------------------------------

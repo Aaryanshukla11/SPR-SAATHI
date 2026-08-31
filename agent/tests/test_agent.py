@@ -99,13 +99,50 @@ def test_decision_protocol_validations():
     assert ok is False
     assert "Invalid decision type" in err
     
+    # Missing tool_name in tool_call
+    ok, err = validate_model_decision({"decision_type": "tool_call", "arguments": {"app_name": "notepad.exe"}})
+    assert ok is False
+    assert "Missing 'tool_name'" in err
+    
+    # Missing arguments in tool_call
     ok, err = validate_model_decision({"decision_type": "tool_call", "tool_name": "launch_app"})
     assert ok is False
     assert "Missing 'arguments'" in err
 
+    # Malformed arguments (None or missing)
+    ok, err = validate_model_decision({"decision_type": "tool_call", "tool_name": "launch_app", "arguments": None})
+    assert ok is False
+    assert "Missing 'arguments'" in err
+
+    # Invalid final (missing message)
+    ok, err = validate_model_decision({"decision_type": "final"})
+    assert ok is False
+    assert "Missing 'message'" in err
+
+    # Invalid wait (missing duration_seconds)
+    ok, err = validate_model_decision({"decision_type": "wait"})
+    assert ok is False
+    assert "Missing 'duration_seconds'" in err
+
+    # Invalid wait (negative duration)
     ok, err = validate_model_decision({"decision_type": "wait", "duration_seconds": -1.0})
     assert ok is False
     assert "must be positive" in err
+
+    # Invalid wait (non-numeric duration)
+    ok, err = validate_model_decision({"decision_type": "wait", "duration_seconds": "invalid"})
+    assert ok is False
+    assert "must be a valid number" in err
+
+    # Invalid ask_user (missing question)
+    ok, err = validate_model_decision({"decision_type": "ask_user"})
+    assert ok is False
+    assert "Missing 'question'" in err
+
+    # Invalid replan (missing reason)
+    ok, err = validate_model_decision({"decision_type": "replan"})
+    assert ok is False
+    assert "Missing 'reason'" in err
 
 # --- Model Provider Integration and Switching Tests ---
 
@@ -346,3 +383,152 @@ def test_clean_and_normalize_decision():
     dec = clean_and_normalize_decision(wait_str)
     assert dec["decision_type"] == "wait"
     assert dec["duration_seconds"] == 5.0
+
+# --- Architectural Verification Tests (Requirement A to I) ---
+
+@pytest.mark.asyncio
+async def test_architectural_planner_no_computer_actions():
+    """Test A: Planner does not choose concrete computer actions"""
+    planner = RuleBasedPlanner(None)
+    
+    # Verify create_high_level_plan does not select computer actions
+    high_level = planner.create_high_level_plan("Open Paint and draw a house")
+    assert len(high_level) > 0
+    for step in high_level:
+        assert step.get("tool_call") is None
+        
+    # Verify create_plan does not select computer actions (returns empty list)
+    steps_desc, tool_calls = await planner.create_plan("Open Notepad", "")
+    assert len(tool_calls) == 0
+
+@pytest.mark.asyncio
+async def test_architectural_providers_no_emulation():
+    """Test B: Provider does not manufacture task-specific actions"""
+    # Verify neither provider has hardcoded/manufactured fallbacks or emulation dictionaries
+    api_model = ApiModelProvider("Gemini 3.5 Flash", config={})
+    local_model = LocalModelProvider("Llama 3 8B")
+    
+    obs = {"active_window": None, "visible_windows": [], "screen": {"width": 100, "height": 100}, "cursor": {"x": 0, "y": 0}}
+    
+    # ApiModelProvider with missing keys should raise exception rather than return a fake decision
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(RuntimeError) as exc_info:
+            await api_model.decide_action("Open Notepad", [], obs, [])
+        assert "API_CREDENTIALS_MISSING" in str(exc_info.value) or "API local service call failed" in str(exc_info.value)
+        
+    # LocalModelProvider when Ollama is down should raise exception rather than return a fake decision
+    with pytest.raises(RuntimeError) as exc_info:
+        await local_model.decide_action("Draw a house in Paint", [], obs, [])
+    assert "MODEL_UNAVAILABLE" in str(exc_info.value)
+
+@pytest.mark.asyncio
+async def test_architectural_local_unavailable_ollama():
+    """Test C: Unavailable Ollama returns an explicit error"""
+    local_model = LocalModelProvider("Llama 3 8B")
+    obs = {"active_window": None, "visible_windows": [], "screen": {"width": 100, "height": 100}, "cursor": {"x": 0, "y": 0}}
+    
+    # Mocking httpx connection failure to simulate Ollama down
+    with patch("httpx.AsyncClient.get", side_effect=Exception("Connection refused")):
+        with pytest.raises(RuntimeError) as exc_info:
+            await local_model.decide_action("Open Paint", [], obs, [])
+        assert "MODEL_UNAVAILABLE" in str(exc_info.value)
+
+@pytest.mark.asyncio
+async def test_architectural_api_credentials_missing():
+    """Test D: Unavailable API credentials return an explicit error"""
+    api_model = ApiModelProvider("Gemini 3.5 Flash", config={})
+    obs = {"active_window": None, "visible_windows": [], "screen": {"width": 100, "height": 100}, "cursor": {"x": 0, "y": 0}}
+    
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(RuntimeError) as exc_info:
+            await api_model.decide_action("Open Notepad", [], obs, [])
+        assert "API_CREDENTIALS_MISSING" in str(exc_info.value) or "API local service call failed" in str(exc_info.value)
+
+def test_architectural_tool_schema_exposed():
+    """Test E: Tool schemas are available to the model gateway"""
+    from agent.core.schema import get_tools_schema
+    schemas = get_tools_schema()
+    
+    assert len(schemas) > 0
+    for s in schemas:
+        assert "name" in s
+        assert "description" in s
+        assert "parameters" in s
+        assert "properties" in s["parameters"]
+
+def test_architectural_tool_results_history():
+    """Test F: Tool results can be represented as model context"""
+    tracker = StateTracker()
+    tracker.reset("Test Goal")
+    
+    tracker.add_action_history(
+        action_name="launch_app",
+        parameters={"app_name": "notepad.exe"},
+        status="completed",
+        error_message=None,
+        duration_ms=150,
+        output="Application launched successfully"
+    )
+    
+    assert len(tracker.action_history) == 1
+    item = tracker.action_history[0]
+    assert item["action"] == "launch_app"
+    assert item["parameters"] == {"app_name": "notepad.exe"}
+    assert item["status"] == "completed"
+    assert item["duration_ms"] == 150
+    assert item["output"] == "Application launched successfully"
+
+@pytest.mark.asyncio
+async def test_architectural_permission_enforcement(temp_config_path):
+    """Test G: Permission remains enforced"""
+    pm = PolicyManager(config_path=temp_config_path)
+    broker = PermissionBroker(pm)
+    pm.update_policy("terminal", "deny")
+    
+    # cmd tool is in terminal category and terminal category is denied
+    allowed = await broker.check_permission("cmd", "terminal", {"command": "echo hello"})
+    assert allowed is False
+    assert broker.audit_trail[0]["decision"] == "deny"
+
+@pytest.mark.asyncio
+async def test_architectural_takeover_pauses_execution():
+    """Test H: Takeover pauses execution"""
+    from agent.control.takeover import TakeoverManager
+    tm = TakeoverManager()
+    
+    # Trigger takeover
+    tm.take_control()
+    assert tm.is_takeover_active is True
+    
+    # Test that executor blocks tool execution
+    pm = PolicyManager()
+    broker = PermissionBroker(pm)
+    executor = ToolExecutor(get_all_tools(), broker, tm)
+    
+    res = await executor.execute_action("launch_app", {"app_name": "notepad.exe"})
+    assert res["success"] is False
+    assert res["error"] == "CONTROL_LOCKED"
+
+@pytest.mark.asyncio
+async def test_architectural_stop_releases_buttons():
+    """Test I: Stop cancels execution and releases held buttons"""
+    tracker = StateTracker()
+    pm = PolicyManager()
+    broker = PermissionBroker(pm)
+    executor = ToolExecutor(get_all_tools(), broker)
+    
+    from agent.control.takeover import TakeoverManager
+    tm = TakeoverManager()
+    
+    loop = AgentLoop(
+        state_tracker=tracker,
+        planner=RuleBasedPlanner(None),
+        executor=executor,
+        takeover_manager=tm
+    )
+    
+    with patch("agent.core.win32_utils.release_all_buttons") as mock_release:
+        loop.stop_task()
+        assert tracker.status == "cancelled"
+        mock_release.assert_called_once()
+

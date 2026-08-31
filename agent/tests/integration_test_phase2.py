@@ -20,12 +20,45 @@ async def run_smoke_test():
         return
 
     tracker = StateTracker()
-    planner = RuleBasedPlanner(None) # Rule planner doesn't need provider for rules matching
+    from agent.models.api import ApiModelProvider
+    model = ApiModelProvider("Gemini 3.5 Flash")
+    
+    async def mock_decide_action(goal, plan, observation, recent_history):
+        successful_drags = [a for a in recent_history if a.get("action") == "mouse_drag" and a.get("status") == "completed"]
+        launched = any(a.get("action") == "launch_app" and a.get("status") == "completed" for a in recent_history)
+        focused = any(a.get("action") == "focus_window" and a.get("status") == "completed" for a in recent_history)
+        
+        if not launched:
+            return {"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "mspaint.exe"}}
+        if not focused:
+            return {"decision_type": "tool_call", "tool_name": "focus_window", "arguments": {"process_name": "mspaint.exe", "title_substring": "Paint"}}
+            
+        drag_steps = [
+            {"start_x": 300, "start_y": 300, "end_x": 500, "end_y": 300, "duration_ms": 300, "target_window": "Paint"},
+            {"start_x": 500, "start_y": 300, "end_x": 500, "end_y": 500, "duration_ms": 300, "target_window": "Paint"},
+            {"start_x": 500, "start_y": 500, "end_x": 300, "end_y": 500, "duration_ms": 300, "target_window": "Paint"},
+            {"start_x": 300, "start_y": 500, "end_x": 300, "end_y": 300, "duration_ms": 300, "target_window": "Paint"},
+            {"start_x": 300, "start_y": 300, "end_x": 400, "end_y": 200, "duration_ms": 300, "target_window": "Paint"},
+            {"start_x": 400, "start_y": 200, "end_x": 500, "end_y": 300, "duration_ms": 300, "target_window": "Paint"},
+            {"start_x": 370, "start_y": 500, "end_x": 370, "end_y": 400, "duration_ms": 200, "target_window": "Paint"},
+            {"start_x": 370, "start_y": 400, "end_x": 430, "end_y": 400, "duration_ms": 200, "target_window": "Paint"},
+            {"start_x": 430, "start_y": 400, "end_x": 430, "end_y": 500, "duration_ms": 200, "target_window": "Paint"}
+        ]
+        
+        idx = len(successful_drags)
+        if idx < len(drag_steps):
+            return {"decision_type": "tool_call", "tool_name": "mouse_drag", "arguments": drag_steps[idx]}
+            
+        return {"decision_type": "final", "message": "Task completed successfully"}
+        
+    model.decide_action = mock_decide_action
+    planner = RuleBasedPlanner(model)
     
     pm = PolicyManager()
-    pm.update_policy("windows", "allow")
-    pm.update_policy("computer", "allow")
-    broker = PermissionBroker(pm)
+    pm.update_policy("applications", "allow")
+    pm.update_policy("mouse", "allow")
+    pm.update_app_policy("mspaint.exe", "allow")
+    broker = PermissionBroker(pm, tracker)
     
     tools = get_all_tools()
     executor = ToolExecutor(tools, broker)
