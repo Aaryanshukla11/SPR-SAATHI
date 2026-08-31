@@ -50,7 +50,7 @@ class StateTracker:
         self.computer_state = computer_state
         self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
 
-    def add_action_history(self, action_name: str, parameters: Dict[str, Any], status: str, error_message: Optional[str] = None, duration_ms: int = 0):
+    def add_action_history(self, action_name: str, parameters: Dict[str, Any], status: str, error_message: Optional[str] = None, duration_ms: int = 0, output: Optional[str] = None):
         clean_params = parameters.copy()
         history_item = {
             "action": action_name,
@@ -61,6 +61,8 @@ class StateTracker:
         }
         if error_message:
             history_item["error"] = error_message
+        if output:
+            history_item["output"] = output
             
         self.action_history.append(history_item)
         if len(self.action_history) > 50:

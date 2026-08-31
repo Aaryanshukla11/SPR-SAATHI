@@ -113,7 +113,7 @@ class AgentLoop:
         Resumes task execution after takeover is released.
         Performs re-observation, plan revalidation, and replanning before resuming AI_CONTROL.
         """
-        if self.state_tracker.status != "paused":
+        if self.state_tracker.status in ["completed", "failed", "cancelled", "stopped"]:
             return False
 
         # Transitioning state
@@ -259,6 +259,16 @@ class AgentLoop:
                 model = self.planner.model_provider
                 await self._emit_event("status_change", "Thinking...")
                 
+                from agent.core.schema import get_tools_schema
+                try:
+                    num_tools = len(get_tools_schema())
+                except Exception:
+                    num_tools = 0
+                print(f"[DEVELOPMENT LOG] === MODEL_REQUEST ===")
+                print(f"  Provider: {model.__class__.__name__}")
+                print(f"  Model: {model.model_name}")
+                print(f"  Number of Tools: {num_tools}")
+                
                 decision = await model.decide_action(
                     goal=task,
                     plan=self.state_tracker.steps,
@@ -270,6 +280,13 @@ class AgentLoop:
                 is_valid, err_msg = validate_model_decision(decision)
                 if not is_valid:
                     raise ValueError(f"Model returned invalid decision: {err_msg}")
+                    
+                print(f"[DEVELOPMENT LOG] === MODEL_RESPONSE ===")
+                print(f"  Decision Type: {decision.get('decision_type')}")
+                if decision.get("decision_type") == "tool_call":
+                    print(f"  Tool Call: {decision.get('tool_name')}")
+                    import json
+                    print(f"  Tool Arguments: {json.dumps(decision.get('arguments'))}")
                     
                 await self._emit_event("task.decision", f"Selected action type: {decision['decision_type']}", decision)
 
@@ -368,12 +385,19 @@ class AgentLoop:
                     result = await self.executor.execute_action(tool_name, args, call_id)
                     duration_ms = int((time.time() - start_time) * 1000)
 
+                    print(f"[DEVELOPMENT LOG] === TOOL_RESULT ===")
+                    print(f"  Tool: {tool_name}")
+                    print(f"  Success: {result.get('success')}")
+                    print(f"  Output: {result.get('output')}")
+                    print(f"  Error: {result.get('error')}")
+
                     self.state_tracker.add_action_history(
                         tool_name, 
                         args, 
                         "completed" if result["success"] else "failed", 
                         result.get("error"), 
-                        duration_ms
+                        duration_ms,
+                        output=result.get("output")
                     )
 
                     # 4. Verify & Re-observe (Requirement 13)

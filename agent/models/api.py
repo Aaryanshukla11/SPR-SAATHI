@@ -1,49 +1,148 @@
+import json
+import httpx
 import re
 from typing import List, Dict, Any, Optional
 from .base import BaseModelProvider, ModelResponse
 
 class ApiModelProvider(BaseModelProvider):
+    def _get_api_key(self, provider: str) -> Optional[str]:
+        if self.config.get("api_key"):
+            return self.config["api_key"]
+        
+        # Fallback to environment variables
+        import os
+        if provider == "gemini":
+            return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        elif provider == "openai":
+            return os.environ.get("OPENAI_API_KEY")
+        elif provider == "anthropic":
+            return os.environ.get("ANTHROPIC_API_KEY")
+        return os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+    def _resolve_provider_and_model(self) -> tuple[str, str]:
+        name = self.model_name.lower()
+        if "gpt" in name or "openai" in name:
+            model = "gpt-4o"
+            if "mini" in name:
+                model = "gpt-4o-mini"
+            return "openai", model
+        elif "gemini" in name:
+            model = "gemini-1.5-flash"
+            if "pro" in name:
+                model = "gemini-1.5-pro"
+            return "gemini", model
+        elif "claude" in name or "anthropic" in name or "sonnet" in name or "haiku" in name:
+            model = "claude-3-5-sonnet-20241022"
+            if "haiku" in name:
+                model = "claude-3-5-haiku-20241022"
+            return "anthropic", model
+        else:
+            return "openai", "gpt-4o"
+
+    async def _make_api_call(self, system_instruction: str, user_content: str) -> str:
+        provider, model = self._resolve_provider_and_model()
+        api_key = self._get_api_key(provider)
+        if not api_key:
+            raise RuntimeError("API_CREDENTIALS_MISSING: Cloud API key was not configured.")
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            if provider == "openai":
+                url = "https://api.openai.com/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": user_content}
+                    ],
+                    "temperature": 0.0,
+                    "response_format": {"type": "json_object"}
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"OpenAI API call failed with status {res.status_code}: {res.text}")
+                res_data = res.json()
+                return res_data["choices"][0]["message"]["content"]
+                
+            elif provider == "gemini":
+                # Maps gemini models to beta API endpoints
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "contents": [
+                        {"role": "user", "parts": [{"text": user_content}]}
+                    ],
+                    "systemInstruction": {
+                        "parts": [{"text": system_instruction}]
+                    },
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.0
+                    }
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"Gemini API call failed with status {res.status_code}: {res.text}")
+                res_data = res.json()
+                return res_data["candidates"][0]["content"]["parts"][0]["text"]
+                
+            elif provider == "anthropic":
+                url = "https://api.anthropic.com/v1/messages"
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                }
+                payload = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "system": system_instruction,
+                    "messages": [
+                        {"role": "user", "content": user_content}
+                    ],
+                    "temperature": 0.0
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"Anthropic API call failed with status {res.status_code}: {res.text}")
+                res_data = res.json()
+                return res_data["content"][0]["text"]
+                
+            else:
+                raise ValueError(f"Unknown API provider: {provider}")
+
     async def generate(self, prompt: str, system_instruction: Optional[str] = None) -> ModelResponse:
-        return ModelResponse(
-            text=f"[API Model '{self.model_name}'] Mock completion for: {prompt[:50]}...",
-            raw_response={"provider": "api", "model": self.model_name}
-        )
+        system = system_instruction or "You are a helpful assistant."
+        try:
+            content = await self._make_api_call(system, prompt)
+            return ModelResponse(text=content, raw_response={"provider_model": self.model_name})
+        except Exception as e:
+            err_str = str(e)
+            if "API_CREDENTIALS_MISSING" in err_str:
+                raise RuntimeError("API_CREDENTIALS_MISSING")
+            raise RuntimeError(f"API generate call failed. Details: {err_str}")
 
     async def generate_with_tools(self, prompt: str, tools: List[Dict[str, Any]], system_instruction: Optional[str] = None) -> ModelResponse:
-        text = f"[API Model '{self.model_name}'] Analyzing request and planning steps."
-        tool_calls = []
-
-        prompt_lower = prompt.lower()
-        if "paint" in prompt_lower:
-            tool_calls = [
-                {
-                    "call_id": "call_paint_1",
-                    "tool_name": "launch_app",
-                    "arguments": {"app_name": "mspaint.exe"}
-                }
-            ]
-        elif "notepad" in prompt_lower:
-            tool_calls = [
-                {
-                    "call_id": "call_notepad_1",
-                    "tool_name": "launch_app",
-                    "arguments": {"app_name": "notepad.exe"}
-                }
-            ]
-        else:
-            tool_calls = [
-                {
-                    "call_id": "call_cmd_1",
-                    "tool_name": "cmd",
-                    "arguments": {"command": "echo System received task"}
-                }
-            ]
-
-        return ModelResponse(
-            text=text,
-            tool_calls=tool_calls,
-            raw_response={"provider": "api", "model": self.model_name, "mocked": True}
-        )
+        system = system_instruction or "You are a helpful assistant."
+        user = f"Available tools:\n{json.dumps(tools)}\n\nPrompt:\n{prompt}"
+        try:
+            content = await self._make_api_call(system, user)
+            tool_calls = []
+            try:
+                parsed = json.loads(content.strip())
+                if isinstance(parsed, dict) and "tool_name" in parsed:
+                    tool_calls.append(parsed)
+            except Exception:
+                pass
+            return ModelResponse(text=content, tool_calls=tool_calls, raw_response={"provider_model": self.model_name})
+        except Exception as e:
+            err_str = str(e)
+            if "API_CREDENTIALS_MISSING" in err_str:
+                raise RuntimeError("API_CREDENTIALS_MISSING")
+            raise RuntimeError(f"API generate_with_tools call failed. Details: {err_str}")
 
     async def decide_action(
         self, 
@@ -52,98 +151,213 @@ class ApiModelProvider(BaseModelProvider):
         observation: Dict[str, Any], 
         recent_history: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """
-        Decision-making logic for multi-step Notepad operations, saves, recovery, and plan progress.
-        """
-        goal_lower = goal.lower()
-        active_win = observation.get("active_window")
-        active_process = str(active_win.get("process") or "").lower() if active_win else ""
-        active_title = str(active_win.get("title") or "").lower() if active_win else ""
+        from agent.core.schema import get_tools_schema
+        tools_list = get_tools_schema()
+        
+        system_instruction = (
+            "You are SPR SAATHI, an autonomous computer use agent operating a Windows system.\n"
+            "Your goal is to solve the user's requested task by selecting appropriate tools step-by-step.\n"
+            "You must output ONLY a valid JSON object matching the ModelDecision schema below.\n"
+            "Do NOT include any markdown block notation (like ```json), thoughts, description, or text before/after the JSON.\n\n"
+            "=== SCHEMA ===\n"
+            "The JSON object must contain 'decision_type' (one of: 'tool_call', 'final', 'replan', 'ask_user', 'wait') and parameters based on the type:\n"
+            "- If 'decision_type' == 'tool_call': Must provide 'tool_name' (string) and 'arguments' (object containing parameters matching tool schema).\n"
+            "- If 'decision_type' == 'final': Must provide 'message' (string describing task completion result).\n"
+            "- If 'decision_type' == 'replan': Must provide 'reason' (string explaining why planning checklist requires update).\n"
+            "- If 'decision_type' == 'ask_user': Must provide 'question' (string asking user for input or clarification).\n"
+            "- If 'decision_type' == 'wait': Must provide 'duration_seconds' (number, positive).\n\n"
+            "=== GUIDELINES ===\n"
+            "1. Only call tools that are listed in the catalog below. Do not invent tools.\n"
+            "2. Never repeat the exact same failing action twice. If a tool output shows an error, try another argument or tool, or ask the user.\n"
+            "3. First launch the application, then make sure it is focused, then type or click inside it.\n"
+            "4. Respect desktop window bounds. When typing, ensure target application is focused in the foreground active window.\n"
+            "5. Once the goal is completed, output a 'final' decision immediately. Do not keep running.\n"
+        )
 
-        # Analyze completed actions from the history
-        launched = False
-        focused = False
-        typed = False
-        hotkey_saved = False
-        filename_typed = False
-        saved = False
+        user_content = (
+            f"=== USER GOAL ===\n{goal}\n\n"
+            f"=== CHECKLIST PLAN ===\n{json.dumps(plan, indent=2)}\n\n"
+            f"=== CURRENT OBSERVATION ===\n{json.dumps(observation, indent=2)}\n\n"
+            f"=== HISTORY OF EXECUTED ACTIONS ===\n"
+        )
+        
+        for idx, act in enumerate(recent_history):
+            status = act.get("status")
+            err = act.get("error") or act.get("error_message")
+            err_str = f" | Error: {err}" if err else ""
+            user_content += f"{idx+1}. Tool: {act.get('action')} | Args: {json.dumps(act.get('parameters'))} | Status: {status}{err_str}\n"
+            
+        user_content += f"\n=== AVAILABLE TOOLS ===\n{json.dumps(tools_list, indent=2)}\n\n"
+        user_content += "Decide the next step. Return ONLY the JSON object. Do not include thoughts."
 
-        for action in recent_history:
-            if action.get("status") == "completed":
-                name = action.get("action")
-                params = action.get("parameters", {})
-                if name == "launch_app" and "notepad" in str(params.get("app_name")).lower():
-                    launched = True
-                elif name == "focus_window" and "notepad" in str(params.get("process_name") or params.get("title_substring")).lower():
-                    focused = True
-                elif name == "keyboard_type":
-                    txt = str(params.get("text", "")).lower()
-                    if "hello.txt" in txt or "txt" in txt:
-                        filename_typed = True
-                    elif "hello" in txt:
-                        typed = True
-                elif name == "keyboard_hotkey" and any("s" in str(k).lower() for k in params.get("keys", [])):
-                    hotkey_saved = True
-                elif name == "keyboard_press" and "enter" in str(params.get("key", "")).lower():
-                    saved = True
-        # Notepad flow
-        if "notepad" in goal_lower:
-            notepad_running = "notepad.exe" in active_process or "notepad" in active_title
-            visible_windows = observation.get("visible_windows", [])
-            any_notepad = any("notepad" in str(w.get("process", "")).lower() or "notepad" in str(w.get("title", "")).lower() for w in visible_windows)
+        try:
+            content = await self._make_api_call(system_instruction, user_content)
+            from .base import clean_and_normalize_decision
+            decision = clean_and_normalize_decision(content)
+            return decision
+        except Exception as e:
+            err_str = str(e)
+            if "API_CREDENTIALS_MISSING" in err_str:
+                raise RuntimeError("API_CREDENTIALS_MISSING")
+            raise RuntimeError(f"API local service call failed. Error: {err_str}")
 
-            if not notepad_running and not any_notepad:
-                return {
-                    "decision_type": "tool_call",
-                    "tool_name": "launch_app",
-                    "arguments": {"app_name": "notepad.exe"}
+    async def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
+        provider, model = self._resolve_provider_and_model()
+        
+        # Determine transcribing provider (fallback to gemini or openai if needed)
+        transcribe_provider = provider
+        api_key = self._get_api_key(provider)
+        
+        if transcribe_provider not in ["gemini", "openai"]:
+            import os
+            if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+                transcribe_provider = "gemini"
+                api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            elif os.environ.get("OPENAI_API_KEY"):
+                transcribe_provider = "openai"
+                api_key = os.environ.get("OPENAI_API_KEY")
+            else:
+                raise RuntimeError("API_CREDENTIALS_MISSING: Gemini or OpenAI API key is required for audio transcription.")
+        
+        if not api_key:
+            raise RuntimeError("API_CREDENTIALS_MISSING: Cloud API key not found for audio transcription.")
+            
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            if transcribe_provider == "openai":
+                url = "https://api.openai.com/v1/audio/transcriptions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}"
                 }
-
-            if not notepad_running and any_notepad and not focused:
-                return {
-                    "decision_type": "tool_call",
-                    "tool_name": "focus_window",
-                    "arguments": {"process_name": "notepad.exe", "title_substring": "Notepad"}
+                files = {
+                    "file": ("audio.webm", audio_bytes, mime_type)
                 }
-
-            if "type" in goal_lower or "write" in goal_lower:
-                if not typed:
-                    match = re.search(r"(?:type|write|enter)\s+(.+?)(?:,|$|and\s+save)", goal, re.IGNORECASE)
-                    text_to_type = match.group(1).strip() if match else "Hello SPR Saathi"
-                    text_to_type = text_to_type.strip("'\"")
-                    return {
-                        "decision_type": "tool_call",
-                        "tool_name": "keyboard_type",
-                        "arguments": {"text": text_to_type}
+                data = {
+                    "model": "whisper-1"
+                }
+                res = await client.post(url, headers=headers, files=files, data=data)
+                if res.status_code != 200:
+                    raise RuntimeError(f"OpenAI Whisper API call failed with status {res.status_code}: {res.text}")
+                return res.json().get("text", "")
+                
+            elif transcribe_provider == "gemini":
+                # Calls Gemini generateContent with inline base64 audio
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                import base64
+                audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+                payload = {
+                    "contents": [
+                        {
+                            "parts": [
+                                {
+                                    "inlineData": {
+                                        "mimeType": mime_type,
+                                        "data": audio_b64
+                                    }
+                                },
+                                {
+                                    "text": "Please provide an accurate transcription of this spoken audio. Output only the transcribed text, nothing else. Do not include any meta comments."
+                                }
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.0
                     }
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"Gemini transcription call failed with status {res.status_code}: {res.text}")
+                res_data = res.json()
+                text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                return text.strip()
+            else:
+                raise ValueError(f"Unsupported transcription provider: {transcribe_provider}")
 
-            if "save" in goal_lower:
-                if not hotkey_saved:
-                    return {
-                        "decision_type": "tool_call",
-                        "tool_name": "keyboard_hotkey",
-                        "arguments": {"keys": ["ctrl", "s"]}
-                    }
-                if not filename_typed:
-                    return {
-                        "decision_type": "tool_call",
-                        "tool_name": "keyboard_type",
-                        "arguments": {"text": "hello.txt"}
-                    }
-                if not saved:
-                    return {
-                        "decision_type": "tool_call",
-                        "tool_name": "keyboard_press",
-                        "arguments": {"key": "enter"}
-                    }
-
-            return {
-                "decision_type": "final",
-                "message": "Task completed successfully. Notepad opened, typed, and saved."
-            }
-
-        # Default fallback
-        return {
-            "decision_type": "final",
-            "message": f"Goal '{goal}' completed successfully (fallback API simulation)."
-        }
+    async def analyze_image(self, image_bytes: bytes, mime_type: str, prompt: str) -> str:
+        # Cloud API image analysis implementation
+        provider, model = self._resolve_provider_and_model()
+        api_key = self._get_api_key(provider)
+        if not api_key:
+            raise RuntimeError("API_CREDENTIALS_MISSING")
+        import base64
+        img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            if provider == "openai":
+                url = "https://api.openai.com/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}}
+                            ]
+                        }
+                    ],
+                    "temperature": 0.0
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"OpenAI Vision API returned status {res.status_code}: {res.text}")
+                res_data = res.json()
+                return res_data["choices"][0]["message"]["content"]
+                
+            elif provider == "gemini":
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": prompt},
+                                {"inlineData": {"mimeType": mime_type, "data": img_b64}}
+                            ]
+                        }
+                    ],
+                    "generationConfig": {"temperature": 0.0}
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"Gemini Vision API returned status {res.status_code}: {res.text}")
+                res_data = res.json()
+                return res_data["candidates"][0]["content"]["parts"][0]["text"]
+                
+            elif provider == "anthropic":
+                url = "https://api.anthropic.com/v1/messages"
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                }
+                payload = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": img_b64
+                                    }
+                                },
+                                {"type": "text", "text": prompt}
+                            ]
+                        }
+                    ],
+                    "temperature": 0.0
+                }
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code != 200:
+                    raise RuntimeError(f"Anthropic Vision API returned status {res.status_code}: {res.text}")
+                res_data = res.json()
+                return res_data["content"][0]["text"]
+            else:
+                raise ValueError(f"Unknown API provider: {provider}")

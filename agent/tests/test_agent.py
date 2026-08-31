@@ -112,7 +112,7 @@ def test_decision_protocol_validations():
 @pytest.mark.asyncio
 async def test_provider_decisions_switching():
     # Both api and local providers must implement the decide_action interface returning identical outcomes
-    api_model = ApiModelProvider("Gemini 3.5 Flash")
+    api_model = ApiModelProvider("Gemini 3.5 Flash", config={"api_key": "fake_key"})
     local_model = LocalModelProvider("Llama 3 8B")
     
     obs = {
@@ -122,9 +122,72 @@ async def test_provider_decisions_switching():
         "cursor": {"x": 0, "y": 0}
     }
     
-    # Notepad closed observation -> both should decide to launch Notepad
-    api_dec = await api_model.decide_action("Open Notepad and type Hello", [], obs, [])
-    local_dec = await local_model.decide_action("Open Notepad and type Hello", [], obs, [])
+    import json
+    mock_response_json = {
+        "message": {
+            "content": '{"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}'
+        },
+        "choices": [
+            {
+                "message": {
+                    "content": '{"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}'
+                }
+            }
+        ],
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": '{"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}'
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    
+    mock_tags_json = {
+        "models": [
+            {"name": "qwen2.5-coder:latest"},
+            {"name": "qwen2.5-coder:7b"}
+        ]
+    }
+    
+    class MockResponse:
+        def __init__(self, status_code, json_data):
+            self.status_code = status_code
+            self._json_data = json_data
+            
+        def json(self):
+            return self._json_data
+            
+        @property
+        def text(self):
+            return json.dumps(self._json_data)
+
+    mock_client = MagicMock()
+    
+    async def mock_get(url, **kwargs):
+        if "tags" in url:
+            return MockResponse(200, mock_tags_json)
+        return MockResponse(200, {})
+        
+    async def mock_post(url, **kwargs):
+        return MockResponse(200, mock_response_json)
+        
+    mock_client.get = mock_get
+    mock_client.post = mock_post
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch("urllib.request.urlopen") as mock_urlopen:
+         
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(mock_tags_json).encode()
+        
+        api_dec = await api_model.decide_action("Open Notepad and type Hello", [], obs, [])
+        local_dec = await local_model.decide_action("Open Notepad and type Hello", [], obs, [])
     
     assert api_dec["decision_type"] == "tool_call"
     assert api_dec["tool_name"] == "launch_app"
@@ -254,3 +317,32 @@ def test_health_check_endpoint():
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+def test_clean_and_normalize_decision():
+    from agent.models.base import clean_and_normalize_decision
+    
+    # Test 1: standard clean JSON
+    json_str = '{"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad"}}'
+    dec = clean_and_normalize_decision(json_str)
+    assert dec["decision_type"] == "tool_call"
+    assert dec["tool_name"] == "launch_app"
+    assert dec["arguments"] == {"app_name": "notepad"}
+
+    # Test 2: JSON with markdown code blocks
+    markdown_str = '```json\n{"decision_type": "final", "message": "Success!"}\n```'
+    dec = clean_and_normalize_decision(markdown_str)
+    assert dec["decision_type"] == "final"
+    assert dec["message"] == "Success!"
+
+    # Test 3: JSON with alternative keys
+    alt_str = '{"type": "tool_call", "name": "focus_window", "args": {"title": "Notepad"}}'
+    dec = clean_and_normalize_decision(alt_str)
+    assert dec["decision_type"] == "tool_call"
+    assert dec["tool_name"] == "focus_window"
+    assert dec["arguments"] == {"title": "Notepad"}
+
+    # Test 4: Wait command key normalization
+    wait_str = '{"type": "wait", "duration": 5.0}'
+    dec = clean_and_normalize_decision(wait_str)
+    assert dec["decision_type"] == "wait"
+    assert dec["duration_seconds"] == 5.0

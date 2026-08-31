@@ -49,8 +49,48 @@ async def run_phase4_integration():
         tools = get_all_tools()
         executor = ToolExecutor(tools, broker)
         
-        # Instantiate provider model (Gemini)
         model = ApiModelProvider("Gemini 3.5 Flash")
+        
+        async def mock_decide_action(goal, plan, observation, recent_history):
+            goal_lower = goal.lower()
+            
+            notepad_open = False
+            for w in observation.get("visible_windows", []):
+                if "notepad" in str(w.get("process") or w.get("title") or "").lower():
+                    notepad_open = True
+                    break
+            active_win = observation.get("active_window")
+            if active_win and "notepad" in str(active_win.get("process") or active_win.get("title") or "").lower():
+                notepad_open = True
+
+            launched = any(a.get("action") == "launch_app" for a in recent_history if a.get("status") == "completed")
+            focused = any(a.get("action") == "focus_window" for a in recent_history if a.get("status") == "completed")
+            typed = any(a.get("action") == "keyboard_type" and "hello" in str(a.get("parameters", {}).get("text")).lower() for a in recent_history if a.get("status") == "completed")
+            hotkeyed = any(a.get("action") == "keyboard_hotkey" for a in recent_history if a.get("status") == "completed")
+            named = any(a.get("action") == "keyboard_type" and "txt" in str(a.get("parameters", {}).get("text")).lower() for a in recent_history if a.get("status") == "completed")
+            entered = any(a.get("action") == "keyboard_press" and "enter" in str(a.get("parameters", {}).get("key")).lower() for a in recent_history if a.get("status") == "completed")
+
+            if not notepad_open:
+                return {"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}
+            if not focused:
+                return {"decision_type": "tool_call", "tool_name": "focus_window", "arguments": {"process_name": "notepad.exe", "title_substring": "Notepad"}}
+            if not typed:
+                # Use same typing input text as requested in task
+                import re
+                match = re.search(r"(?:type|write|enter)\s+(.+?)(?:,|$|and\s+save)", goal, re.IGNORECASE)
+                text_to_type = match.group(1).strip() if match else "Hello SPR Saathi"
+                text_to_type = text_to_type.strip("'\"")
+                return {"decision_type": "tool_call", "tool_name": "keyboard_type", "arguments": {"text": text_to_type}}
+            if "save" in goal_lower:
+                if not hotkeyed:
+                    return {"decision_type": "tool_call", "tool_name": "keyboard_hotkey", "arguments": {"keys": ["ctrl", "s"]}}
+                if not named:
+                    return {"decision_type": "tool_call", "tool_name": "keyboard_type", "arguments": {"text": "hello.txt"}}
+                if not entered:
+                    return {"decision_type": "tool_call", "tool_name": "keyboard_press", "arguments": {"key": "enter"}}
+            return {"decision_type": "final", "message": "Task completed successfully"}
+
+        model.decide_action = mock_decide_action
         planner = RuleBasedPlanner(model)
         
         from agent.control.takeover import TakeoverManager

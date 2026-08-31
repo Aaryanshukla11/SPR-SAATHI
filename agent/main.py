@@ -2,7 +2,7 @@ import asyncio
 import sys
 import uvicorn
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -133,6 +133,7 @@ class PermissionResponse(BaseModel):
 class ModelConfigRequest(BaseModel):
     provider: str  # "local" | "api"
     model_name: str
+    api_key: Optional[str] = None
 
 class PolicyConfigRequest(BaseModel):
     scope: str
@@ -295,10 +296,23 @@ async def respond_permission(req: PermissionResponse):
 async def configure_model(req: ModelConfigRequest):
     global current_model_provider, planner, agent_loop
     
+    config = {}
+    if req.api_key:
+        config["api_key"] = req.api_key
+        import os
+        name = req.model_name.lower()
+        if "gpt" in name or "openai" in name:
+            os.environ["OPENAI_API_KEY"] = req.api_key
+        elif "gemini" in name:
+            os.environ["GEMINI_API_KEY"] = req.api_key
+            os.environ["GOOGLE_API_KEY"] = req.api_key
+        elif "claude" in name or "anthropic" in name or "sonnet" in name or "haiku" in name:
+            os.environ["ANTHROPIC_API_KEY"] = req.api_key
+            
     if req.provider.lower() == "local":
-        current_model_provider = LocalModelProvider(model_name=req.model_name)
-    elif req.provider.lower() == "api":
-        current_model_provider = ApiModelProvider(model_name=req.model_name)
+        current_model_provider = LocalModelProvider(model_name=req.model_name, config=config)
+    elif req.provider.lower() in ["api", "gemini", "openai", "anthropic"]:
+        current_model_provider = ApiModelProvider(model_name=req.model_name, config=config)
     else:
         raise HTTPException(status_code=400, detail="Invalid provider. Choose 'local' or 'api'")
     
@@ -306,6 +320,27 @@ async def configure_model(req: ModelConfigRequest):
     agent_loop.planner = planner
     
     return {"status": "model_updated", "provider": req.provider, "model_name": req.model_name}
+
+@app.get("/api/config/ollama_models")
+async def get_ollama_models():
+    import urllib.request
+    import json
+    try:
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=2.0) as response:
+            data = json.loads(response.read().decode())
+            return {"status": "success", "models": [m.get("name", "") for m in data.get("models", [])]}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "models": []}
+
+@app.get("/api/config/keys")
+async def get_configured_keys():
+    import os
+    return {
+        "openai": bool(os.environ.get("OPENAI_API_KEY")),
+        "gemini": bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+        "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY"))
+    }
 
 @app.get("/api/config/permission")
 async def get_permissions():
@@ -320,6 +355,24 @@ async def respond_user_question(req: UserQuestionResponse):
         agent_loop._user_response_future.set_result(req.response)
         return {"status": "resolved"}
     raise HTTPException(status_code=400, detail="No active user prompt question found.")
+
+@app.post("/api/task/transcribe")
+async def transcribe_endpoint(file: UploadFile = File(...)):
+    try:
+        audio_bytes = await file.read()
+        mime_type = file.content_type or "audio/webm"
+        
+        provider = current_model_provider
+        # Fallback to ApiModelProvider if local model is active but API key env vars are present
+        if hasattr(provider, "model_name") and "local" in getattr(provider, "model_name", "").lower():
+            import os
+            if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+                provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
+                
+        transcription = await provider.transcribe_audio(audio_bytes, mime_type)
+        return {"status": "success", "transcription": transcription}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

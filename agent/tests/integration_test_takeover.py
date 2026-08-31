@@ -32,6 +32,7 @@ async def run_takeover_integration():
         pm.update_policy("mouse", "allow")
         pm.update_policy("keyboard", "allow")
         pm.update_policy("applications", "allow")
+        pm.update_app_policy("notepad.exe", "allow")
         
         takeover_manager = TakeoverManager()
         broker = PermissionBroker(pm, tracker)
@@ -39,6 +40,14 @@ async def run_takeover_integration():
         executor = ToolExecutor(tools, broker, takeover_manager)
         
         model = ApiModelProvider("Gemini 3.5 Flash")
+        
+        async def mock_decide_action(goal, plan, observation, recent_history):
+            launched = any(a.get("action") == "launch_app" for a in recent_history if a.get("status") == "completed")
+            if not launched:
+                return {"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}
+            return {"decision_type": "final", "message": "Task completed successfully"}
+            
+        model.decide_action = mock_decide_action
         planner = RuleBasedPlanner(model)
 
         async def log_event(ev):

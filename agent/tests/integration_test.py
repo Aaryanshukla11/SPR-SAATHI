@@ -22,12 +22,31 @@ async def run_integration_test():
     # 1. Initialize backend components
     tracker = StateTracker()
     mock_provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
+    
+    async def mock_decide_action(goal, plan, observation, recent_history):
+        launched = any(a.get("action") == "launch_app" for a in recent_history if a.get("status") == "completed")
+        focused = any(a.get("action") == "focus_window" for a in recent_history if a.get("status") == "completed")
+        typed = any(a.get("action") == "keyboard_type" and "hello" in str(a.get("parameters", {}).get("text")).lower() for a in recent_history if a.get("status") == "completed")
+        if not launched:
+            return {"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}
+        if not focused:
+            return {"decision_type": "tool_call", "tool_name": "focus_window", "arguments": {"process_name": "notepad.exe", "title_substring": "Notepad"}}
+        if not typed:
+            return {"decision_type": "tool_call", "tool_name": "keyboard_type", "arguments": {"text": "Hello SPR Saathi."}}
+        return {"decision_type": "final", "message": "Task completed successfully"}
+        
+    mock_provider.decide_action = mock_decide_action
     planner = RuleBasedPlanner(mock_provider)
     
     # Allow all permissions for automation test
-    pm = PolicyManager()
-    pm.update_policy("windows", "allow")
-    pm.update_policy("computer", "allow")
+    import os, tempfile
+    fd, config_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    pm = PolicyManager(config_path=config_path)
+    pm.update_policy("mouse", "allow")
+    pm.update_policy("keyboard", "allow")
+    pm.update_policy("applications", "allow")
+    pm.update_app_policy("notepad.exe", "allow")
     
     broker = PermissionBroker(pm)
     tools = get_all_tools()
@@ -107,6 +126,12 @@ async def run_integration_test():
     else:
         print("Could not find Notepad window to close.")
         
+    if os.path.exists(config_path):
+        try:
+            os.remove(config_path)
+        except Exception:
+            pass
+            
     print("====================================================")
     print("INTEGRATION TEST SUCCESSFUL!")
     print("====================================================")

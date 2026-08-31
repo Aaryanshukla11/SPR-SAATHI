@@ -49,6 +49,24 @@ interface PermissionRequest {
   arguments: any
 }
 
+interface OfflineModelSpec {
+  name: string;
+  tag: string;
+  specs: string;
+  isDefault: boolean;
+}
+
+const offlineModelsList: OfflineModelSpec[] = [
+  { name: 'Qwen2.5-Coder 0.5B', tag: '0.5b', specs: 'Size: 0.4 GB • Req: 2GB RAM / Integrated GPU • 16k Context', isDefault: true },
+  { name: 'Qwen2.5-Coder 1.5B', tag: '1.5b', specs: 'Size: 1.0 GB • Req: 4GB RAM / 2GB VRAM • 16k Context', isDefault: true },
+  { name: 'Qwen2.5-Coder 3B', tag: '3b', specs: 'Size: 2.0 GB • Req: 6GB RAM / 4GB VRAM • 32k Context', isDefault: true },
+  { name: 'Qwen2.5-Coder 7B', tag: '7b', specs: 'Size: 4.7 GB • Req: 8GB VRAM / 16System RAM • 32k Context', isDefault: false },
+  { name: 'Qwen2.5-Coder 14B', tag: '14b', specs: 'Size: 9.0 GB • Req: 16GB VRAM / 32GB System RAM • 32k Context', isDefault: false },
+  { name: 'Qwen2.5-Coder 32B', tag: '32b', specs: 'Size: 20.0 GB • Req: 24GB+ VRAM / 64GB System RAM • 32k Context', isDefault: false },
+  { name: 'StarCoder2 15B', tag: 'starcoder2', specs: 'Size: 9.5 GB • Req: 16GB VRAM / 32GB System RAM • 16k Context', isDefault: false },
+  { name: 'DeepSeek-Coder-V2-Lite 16B', tag: 'deepseek', specs: 'Size: 8.9 GB • Req: 16GB VRAM / 32GB System RAM • 32k Context', isDefault: false }
+];
+
 function App(): React.JSX.Element {
   // Connection and Dynamic Port State
   const [port, setPort] = useState<number | null>(null)
@@ -67,11 +85,36 @@ function App(): React.JSX.Element {
     return (localStorage.getItem('mic-permission') as any) || 'prompt'
   })
   const [showMicPrompt, setShowMicPrompt] = useState(false)
-  const recognitionRef = useRef<any>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const animationFrameRef = useRef<number | null>(null)
 
   // Settings
   const [selectedProvider, setSelectedProvider] = useState<'api' | 'local'>('api')
   const [selectedModel, setSelectedModel] = useState('Gemini 3.5 Flash')
+
+  // Model Manager State
+  const [managerTab, setManagerTab] = useState<'offline' | 'online'>('offline')
+  const [installedOllamaModels, setInstalledOllamaModels] = useState<string[]>([])
+  const [apiKeyVisible, setApiKeyVisible] = useState(false)
+  const [cloudProvider, setCloudProvider] = useState<'gemini' | 'openai' | 'anthropic'>('gemini')
+  const [cloudModel, setCloudModel] = useState('Gemini 3.5 Flash')
+  const [cloudApiKey, setCloudApiKey] = useState('')
+  const [managerMessage, setManagerMessage] = useState<{type: 'success' | 'error', text: string} | null>(null)
+
+  // Dynamic offline model classifications
+  const isInstalled = (model: OfflineModelSpec) => {
+    return installedOllamaModels.some(m => m.toLowerCase().includes(model.tag.toLowerCase()))
+  }
+  const installedList = offlineModelsList.filter(m => isInstalled(m))
+  const extendedList = offlineModelsList.filter(m => !isInstalled(m))
+
+  const [configuredKeys, setConfiguredKeys] = useState<{openai: boolean, gemini: boolean, anthropic: boolean}>({
+    openai: false,
+    gemini: false,
+    anthropic: false
+  })
 
   // Permission levels per category
   const [permissions, setPermissions] = useState<Record<string, 'allow' | 'deny' | 'prompt'>>({
@@ -136,6 +179,7 @@ function App(): React.JSX.Element {
 
   // Text Inputs & Event logs
   const [taskInput, setTaskInput] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
   const [feed, setFeed] = useState<FeedItem[]>([])
   const [activePrompt, setActivePrompt] = useState<PermissionRequest | null>(null)
   const [userQuestion, setUserQuestion] = useState<string | null>(null)
@@ -486,7 +530,7 @@ function App(): React.JSX.Element {
       
       setMicPermission('granted')
       localStorage.setItem('mic-permission', 'granted')
-      startSpeechRecognition()
+      startAudioRecording()
     } catch (e) {
       console.error('Microphone permission check error:', e)
       setMicPermission('denied')
@@ -505,6 +549,11 @@ function App(): React.JSX.Element {
   }
 
   const handleMicClick = () => {
+    if (voiceState === 'listening') {
+      stopAudioRecording()
+      return
+    }
+
     if (micPermission === 'denied') {
       setVoiceState('error')
       setVoiceError('Microphone access is denied. Please enable it in Windows settings.')
@@ -514,60 +563,127 @@ function App(): React.JSX.Element {
       setShowMicPrompt(true)
       return
     }
-    startSpeechRecognition()
+    startAudioRecording()
   }
 
-  const startSpeechRecognition = () => {
-    const SpeechRecognition = 
-      (window as any).SpeechRecognition || 
-      (window as any).webkitSpeechRecognition || 
-      (window as any).MockSpeechRecognition
+  const startAudioRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
 
-    if (!SpeechRecognition) {
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop())
+        
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' })
+        await transcribeAndSubmit(audioBlob)
+      }
+
+      try {
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+        audioContextRef.current = audioContext
+        const source = audioContext.createMediaStreamSource(stream)
+        const analyser = audioContext.createAnalyser()
+        analyser.fftSize = 256
+        source.connect(analyser)
+
+        const bufferLength = analyser.frequencyBinCount
+        const dataArray = new Uint8Array(bufferLength)
+
+        let lastActiveTime = Date.now()
+        const silenceThreshold = 15
+        const silenceDuration = 1800 // 1.8 seconds
+
+        const checkVolume = () => {
+          if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') return
+
+          analyser.getByteFrequencyData(dataArray)
+          let sum = 0
+          for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i]
+          }
+          const average = sum / bufferLength
+
+          if (average > silenceThreshold) {
+            lastActiveTime = Date.now()
+          } else if (Date.now() - lastActiveTime > silenceDuration) {
+            console.log('[Voice] Auto-stopping due to silence')
+            stopAudioRecording()
+            return
+          }
+
+          animationFrameRef.current = requestAnimationFrame(checkVolume)
+        }
+
+        animationFrameRef.current = requestAnimationFrame(checkVolume)
+      } catch (e) {
+        console.error('Audio analyser setup failed:', e)
+      }
+
+      mediaRecorder.start()
+      setVoiceState('listening')
+      setVoiceError(null)
+    } catch (e) {
+      console.error('Failed to start audio recording:', e)
       setVoiceState('error')
-      setVoiceError('Speech recognition is not supported in this client.')
+      setVoiceError('Could not access microphone. Ensure permissions are allowed.')
+    }
+  }
+
+  const stopAudioRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop()
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(console.error)
+      audioContextRef.current = null
+    }
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+  }
+
+  const transcribeAndSubmit = async (audioBlob: Blob) => {
+    setVoiceState('processing')
+    setVoiceError(null)
+
+    if (port === null) {
+      setVoiceState('error')
+      setVoiceError('Backend not connected.')
       return
     }
 
-    setVoiceState('listening')
-    setVoiceError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', audioBlob, 'audio.webm')
 
-    const recognition = new SpeechRecognition()
-    recognitionRef.current = recognition
-    recognition.continuous = false
-    recognition.interimResults = false
-    recognition.lang = 'en-US'
+      const res = await fetch(`http://127.0.0.1:${port}/api/task/transcribe`, {
+        method: 'POST',
+        body: formData,
+      })
 
-    recognition.onstart = () => {
-      setVoiceState('listening')
-    }
-
-    recognition.onerror = (event: any) => {
-      console.error('[Speech] Error:', event.error)
-      setVoiceState('error')
-      if (event.error === 'not-allowed') {
-        setVoiceError('Microphone permission denied.')
-      } else if (event.error === 'no-speech') {
-        setVoiceError('No speech detected. Please try again.')
-      } else {
-        setVoiceError(`Transcription failed: ${event.error}`)
+      if (!res.ok) {
+        const errorData = await res.json()
+        throw new Error(errorData.detail || 'Failed to transcribe audio.')
       }
-    }
 
-    recognition.onend = () => {
-      setVoiceState((prev) => (prev === 'listening' ? 'idle' : prev))
-    }
+      const data = await res.json()
+      const transcript = data.transcription
 
-    recognition.onresult = (event: any) => {
-      setVoiceState('processing')
-      const transcript = event.results[0][0].transcript
-      console.log('[Speech] Transcribed text:', transcript)
-      
       if (transcript && transcript.trim()) {
         setVoiceState('transcribing')
         setTaskInput(transcript)
         setVoiceState('ready')
-        
+
         // Auto submit command
         setTimeout(() => {
           triggerStartTask(transcript)
@@ -577,9 +693,11 @@ function App(): React.JSX.Element {
         setVoiceState('error')
         setVoiceError('No speech detected. Please try again.')
       }
+    } catch (e: any) {
+      console.error('Transcription error:', e)
+      setVoiceState('error')
+      setVoiceError(e.message || 'Failed to transcribe audio.')
     }
-
-    recognition.start()
   }
 
   // API wrappers (Unified Task Submission)
@@ -655,21 +773,79 @@ function App(): React.JSX.Element {
   }
 
 
-  const handleModelChange = async (provider: 'api' | 'local', model: string) => {
+  const handleModelChange = async (provider: 'api' | 'local', model: string, apiKey?: string) => {
     setSelectedProvider(provider)
     setSelectedModel(model)
     if (port === null) return
     try {
+      const body: any = { provider, model_name: model }
+      if (apiKey) {
+        body.api_key = apiKey
+      }
       await fetch(`http://127.0.0.1:${port}/api/config/model`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, model_name: model })
+        body: JSON.stringify(body)
       })
       addFeedItem('observe', `Configured model provider to [${provider.toUpperCase()}] ${model}`, new Date().toISOString())
+      await fetchConfiguredKeys()
     } catch (e) {
       console.error('Config model error:', e)
     }
   }
+
+  const fetchConfiguredKeys = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/config/keys`)
+      if (res.ok) {
+        const data = await res.json()
+        setConfiguredKeys(data)
+      }
+    } catch (e) {
+      console.error('Fetch configured keys error:', e)
+    }
+  }
+
+  const fetchOllamaModels = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/config/ollama_models`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.status === 'success' && Array.isArray(data.models)) {
+          setInstalledOllamaModels(data.models)
+        }
+      }
+    } catch (e) {
+      console.error('Fetch Ollama models error:', e)
+    }
+  }
+
+  const fetchAgentState = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/state`)
+      if (res.ok) {
+        const data = await res.json()
+        setAgentState(data)
+      }
+    } catch (e) {
+      console.error('Fetch agent state error:', e)
+    }
+  }
+
+  useEffect(() => {
+    fetchConfiguredKeys()
+  }, [port])
+
+  useEffect(() => {
+    if (activeTab === 'settings') {
+      fetchOllamaModels()
+      fetchConfiguredKeys()
+      setManagerMessage(null)
+    }
+  }, [activeTab, port])
 
   const handlePermissionChange = async (scope: string, level: 'allow' | 'deny' | 'prompt') => {
     setPermissions((prev) => ({ ...prev, [scope]: level }))
@@ -755,7 +931,65 @@ function App(): React.JSX.Element {
           )}
         </div>
         <div className="header-actions">
-          <span className="model-badge">AI: {selectedModel}</span>
+          <span 
+            className="model-badge" 
+            style={{ cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '3px' }}
+            onClick={() => setActiveTab('settings')}
+            title="Manage Models"
+          >
+            AI: {selectedModel}
+          </span>
+          
+          <button
+            className="btn-refresh-status"
+            title="Refresh Status & Models"
+            onClick={async () => {
+              setRefreshing(true)
+              await fetchOllamaModels()
+              await fetchConfiguredKeys()
+              await fetchAgentState()
+              setTimeout(() => setRefreshing(false), 800)
+            }}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--color-text-secondary)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '6px',
+              borderRadius: '50%',
+              transition: 'all 0.2s ease',
+              outline: 'none',
+              marginLeft: 'auto'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#ffffff'
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = 'var(--color-text-secondary)'
+              e.currentTarget.style.background = 'transparent'
+            }}
+          >
+            <svg 
+              width="14" 
+              height="14" 
+              viewBox="0 0 24 24" 
+              fill="none" 
+              stroke="currentColor" 
+              strokeWidth="2.5" 
+              strokeLinecap="round" 
+              strokeLinejoin="round" 
+              style={{ 
+                animation: refreshing ? 'spin 1s linear infinite' : 'none',
+                display: 'block'
+              }}
+            >
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -1213,33 +1447,210 @@ function App(): React.JSX.Element {
             </div>
           </>
         ) : activeTab === 'settings' ? (
-          <>
-            {/* Configuration Settings Panel */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              
-              {/* Model Provider Config */}
-              <section className="settings-panel" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '12px', padding: '12px' }}>
-                <div className="section-title">AI Brain Configuration</div>
-                <div className="settings-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', fontWeight: 600 }}>Active Model:</span>
-                  <select 
-                    className="settings-select"
-                    style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px' }}
-                    value={`${selectedProvider}:${selectedModel}`}
-                    onChange={(e) => {
-                      const [provider, modelName] = e.target.value.split(':')
-                      handleModelChange(provider as 'api' | 'local', modelName)
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
+            
+            {/* Header info */}
+            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Kairo-AI Model Manager</div>
+              <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Select hardware-tuned offline models or configure cloud API credentials</div>
+            </div>
+
+            {/* Tabs */}
+            <div className="model-manager-tabs" style={{ borderRadius: '8px', overflow: 'hidden' }}>
+              <button 
+                className={`model-manager-tab ${managerTab === 'offline' ? 'active' : ''}`}
+                onClick={() => {
+                  setManagerTab('offline');
+                  setManagerMessage(null);
+                }}
+              >
+                Offline Models Zone
+              </button>
+              <button 
+                className={`model-manager-tab ${managerTab === 'online' ? 'active' : ''}`}
+                onClick={() => {
+                  setManagerTab('online');
+                  setManagerMessage(null);
+                }}
+              >
+                Online Cloud Models Zone (API Keys)
+              </button>
+            </div>
+
+            {/* Content Area */}
+            <div className="model-manager-content" style={{ flex: 1, overflowY: 'auto', padding: '12px 4px 4px 4px' }}>
+              {managerMessage && (
+                <div style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '11.5px',
+                  marginBottom: '12px',
+                  background: managerMessage.type === 'success' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                  color: managerMessage.type === 'success' ? '#34d399' : '#f87171',
+                  border: `1px solid ${managerMessage.type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
+                }}>
+                  {managerMessage.text}
+                </div>
+              )}
+
+              {managerTab === 'offline' ? (
+                <div>
+                  <div className="model-category-header">Installed Models</div>
+                  {installedList.length === 0 ? (
+                    <div style={{ fontSize: '11px', color: '#64748b', padding: '10px 14px', background: '#16171d', borderRadius: '8px', border: '1px dashed rgba(255,255,255,0.06)', marginBottom: '12px' }}>
+                      No installed Ollama models detected on your system. Run 'ollama run &lt;model&gt;' to install.
+                    </div>
+                  ) : (
+                    installedList.map(model => (
+                      <div key={model.name} className="model-item-card">
+                        <div className="model-item-info">
+                          <div className="model-item-title-row">
+                            <span className="model-item-title">{model.name}</span>
+                            <span className="model-item-badge installed">Installed</span>
+                          </div>
+                          <div className="model-item-specs">{model.specs}</div>
+                        </div>
+                        {selectedProvider === 'local' && selectedModel === model.name ? (
+                          <span className="model-active-btn">Active</span>
+                        ) : (
+                          <button 
+                            className="model-switch-btn" 
+                            onClick={() => {
+                              handleModelChange('local', model.name);
+                              setManagerMessage({type: 'success', text: `Switched to ${model.name}!`});
+                            }}
+                          >
+                            Switch
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+
+                  <div className="model-category-header">Extended Offline Models</div>
+                  {extendedList.length === 0 ? (
+                    <div style={{ fontSize: '11px', color: '#64748b', padding: '10px 14px', background: '#16171d', borderRadius: '8px', border: '1px dashed rgba(255,255,255,0.06)' }}>
+                      All supported offline models are installed on your system!
+                    </div>
+                  ) : (
+                    extendedList.map(model => (
+                      <div key={model.name} className="model-item-card">
+                        <div className="model-item-info">
+                          <div className="model-item-title-row">
+                            <span className="model-item-title">{model.name}</span>
+                          </div>
+                          <div className="model-item-specs">{model.specs}</div>
+                        </div>
+                        {selectedProvider === 'local' && selectedModel === model.name ? (
+                          <span className="model-active-btn">Active</span>
+                        ) : (
+                          <button 
+                            className="model-switch-btn" 
+                            onClick={() => {
+                              handleModelChange('local', model.name);
+                              setManagerMessage({type: 'success', text: `Switched to ${model.name}!`});
+                            }}
+                          >
+                            Switch
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : (
+                <div className="cloud-setup-form">
+                  <div className="form-group">
+                    <label className="form-label">Cloud Provider:</label>
+                    <select 
+                      className="form-select"
+                      value={cloudProvider}
+                      onChange={(e) => {
+                        const prov = e.target.value as any;
+                        setCloudProvider(prov);
+                        if (prov === 'gemini') {
+                          setCloudModel('Gemini 3.5 Flash');
+                        } else if (prov === 'openai') {
+                          setCloudModel('OpenAI GPT-4o');
+                        } else {
+                          setCloudModel('Claude 3.5 Sonnet');
+                        }
+                      }}
+                    >
+                      <option value="openai">OpenAI Cloud API</option>
+                      <option value="gemini">Gemini Cloud API</option>
+                      <option value="anthropic">Anthropic Cloud API</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Select Cloud Model:</label>
+                    <select 
+                      className="form-select"
+                      value={cloudModel}
+                      onChange={(e) => setCloudModel(e.target.value)}
+                    >
+                      {cloudProvider === 'openai' && (
+                        <>
+                          <option value="OpenAI GPT-4o">OpenAI GPT-4o (125k context)</option>
+                          <option value="OpenAI GPT-4o-mini">OpenAI GPT-4o-mini (128k context)</option>
+                        </>
+                      )}
+                      {cloudProvider === 'gemini' && (
+                        <>
+                          <option value="Gemini 3.5 Flash">Gemini 3.5 Flash (1M context)</option>
+                          <option value="Gemini 3.5 Flash Medium">Gemini 3.5 Flash Medium</option>
+                          <option value="Gemini 1.5 Pro">Gemini 1.5 Pro (2M context)</option>
+                        </>
+                      )}
+                      {cloudProvider === 'anthropic' && (
+                        <>
+                          <option value="Claude 3.5 Sonnet">Claude 3.5 Sonnet (200k context)</option>
+                          <option value="Claude 3.5 Haiku">Claude 3.5 Haiku (200k context)</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">API Key:</label>
+                    <div className="form-input-container">
+                      <input 
+                        type={apiKeyVisible ? 'text' : 'password'}
+                        className="form-input"
+                        placeholder={cloudProvider === 'openai' ? 'sk-...' : cloudProvider === 'gemini' ? 'AIzaSy...' : 'sk-ant/...'}
+                        value={cloudApiKey}
+                        onChange={(e) => setCloudApiKey(e.target.value)}
+                      />
+                      <button 
+                        className="form-toggle-btn"
+                        onClick={() => setApiKeyVisible(!apiKeyVisible)}
+                      >
+                        {apiKeyVisible ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                    <span className="form-info-text">
+                      API keys are stored securely in VS Code SecretStorage and locked to workspace root.
+                    </span>
+                  </div>
+
+                  <button 
+                    className="form-submit-btn"
+                    disabled={!cloudApiKey.trim()}
+                    onClick={async () => {
+                      await handleModelChange('api', cloudModel, cloudApiKey);
+                      setManagerMessage({type: 'success', text: `API Key saved & activated ${cloudModel}!`});
+                      setCloudApiKey('');
                     }}
                   >
-                    <option value="api:Gemini 3.5 Flash">Gemini 3.5 Flash (Cloud)</option>
-                    <option value="api:OpenAI GPT-4o">OpenAI GPT-4o (Cloud)</option>
-                    <option value="local:Llama 3 8B">Llama 3 8B (Local)</option>
-                    <option value="local:Phi-4">Phi-4 (Local)</option>
-                  </select>
+                    Save API Key & Activate Cloud Model
+                  </button>
+
                 </div>
-              </section>
+              )}
             </div>
-          </>
+
+          </div>
         ) : (
           /* Console Event Logs */
           <section className="event-feed">
@@ -1346,9 +1757,7 @@ function App(): React.JSX.Element {
                 style={{ background: 'none', border: 'none', color: 'var(--color-error)', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
                 onClick={() => {
                   setVoiceState('idle')
-                  if (recognitionRef.current) {
-                    recognitionRef.current.abort()
-                  }
+                  stopAudioRecording()
                 }}
               >
                 Cancel
@@ -1358,32 +1767,107 @@ function App(): React.JSX.Element {
         )}
 
         {/* Natural Language Prompt Input */}
-        <div className="input-container">
-          <input
-            type="text"
-            className="chat-input"
-            placeholder="ask anything"
+        <div className="input-container-premium">
+          <textarea
+            className="chat-textarea"
+            placeholder="Ask anything, @ to mention, / for actions"
             value={taskInput}
             onChange={(e) => setTaskInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && triggerStartTask()}
-            disabled={status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped'}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                triggerStartTask()
+              }
+            }}
+            rows={1}
           />
-          <button 
-            className="mic-button" 
-            title="Voice input"
-            onClick={handleMicClick}
-            style={{ color: voiceState === 'listening' ? '#10b981' : undefined }}
-          >
-            🎤
-          </button>
-          <button 
-            className="btn-send"
-            title="Send command"
-            onClick={() => triggerStartTask()}
-            disabled={(status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped') || !taskInput.trim()}
-          >
-            →
-          </button>
+          
+          <div className="input-actions-row">
+            <div className="input-actions-left">
+              <div className="model-dropdown-container">
+                <select
+                  className="model-select-premium"
+                  value={`${selectedProvider}:${selectedModel}`}
+                  onChange={(e) => {
+                    const [provider, modelName] = e.target.value.split(':')
+                    handleModelChange(provider as 'api' | 'local', modelName)
+                  }}
+                >
+                  {/* Cloud/API Models (only if key configured or active) */}
+                  {(configuredKeys.gemini || selectedModel === 'Gemini 3.5 Flash') && (
+                    <option value="api:Gemini 3.5 Flash">Gemini 3.5 Flash</option>
+                  )}
+                  {(configuredKeys.gemini || selectedModel === 'Gemini 3.5 Flash Medium') && (
+                    <option value="api:Gemini 3.5 Flash Medium">Gemini 3.5 Flash Medium</option>
+                  )}
+                  {(configuredKeys.gemini || selectedModel === 'Gemini 1.5 Pro') && (
+                    <option value="api:Gemini 1.5 Pro">Gemini 1.5 Pro</option>
+                  )}
+                  {(configuredKeys.openai || selectedModel === 'OpenAI GPT-4o') && (
+                    <option value="api:OpenAI GPT-4o">OpenAI GPT-4o</option>
+                  )}
+                  {(configuredKeys.openai || selectedModel === 'OpenAI GPT-4o-mini') && (
+                    <option value="api:OpenAI GPT-4o-mini">OpenAI GPT-4o-mini</option>
+                  )}
+                  {(configuredKeys.anthropic || selectedModel === 'Claude 3.5 Sonnet') && (
+                    <option value="api:Claude 3.5 Sonnet">Claude 3.5 Sonnet</option>
+                  )}
+                  {(configuredKeys.anthropic || selectedModel === 'Claude 3.5 Haiku') && (
+                    <option value="api:Claude 3.5 Haiku">Claude 3.5 Haiku</option>
+                  )}
+                  
+                  {/* Local/Offline Models (only if installed or active) */}
+                  {offlineModelsList
+                    .filter(model => isInstalled(model) || (selectedProvider === 'local' && selectedModel === model.name))
+                    .map(model => (
+                      <option key={model.name} value={`local:${model.name}`}>
+                        {model.name} (Installed)
+                      </option>
+                    ))}
+                </select>
+                <span className="dropdown-chevron">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </span>
+              </div>
+            </div>
+            
+            <div className="input-actions-right">
+              <button 
+                className={`mic-button-premium ${voiceState}`} 
+                title="Voice input"
+                onClick={handleMicClick}
+              >
+                {voiceState === 'listening' ? (
+                  <span className="mic-wave-container">
+                    <span className="mic-wave-dot"></span>
+                    <span className="mic-wave-dot"></span>
+                    <span className="mic-wave-dot"></span>
+                  </span>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" y1="19" x2="12" y2="23"></line>
+                    <line x1="8" y1="23" x2="16" y2="23"></line>
+                  </svg>
+                )}
+              </button>
+              
+              <button 
+                className="btn-send-premium"
+                title="Send command"
+                onClick={() => triggerStartTask()}
+                disabled={(status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped') || !taskInput.trim()}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                  <polyline points="12 5 19 12 12 19"></polyline>
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </footer>
 
