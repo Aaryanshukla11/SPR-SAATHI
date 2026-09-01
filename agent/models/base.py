@@ -119,6 +119,7 @@ def clean_and_normalize_decision(content: str) -> Dict[str, Any]:
         if k not in normalized:
             normalized[k] = v
             
+    normalized["_raw_response"] = content
     return normalized
 
 class BaseModelProvider(ABC):

@@ -18,8 +18,9 @@ def build_system_instruction() -> str:
         "- wait: {\"decision_type\": \"wait\", \"duration_seconds\": <number>}\n\n"
         "=== RULES ===\n"
         "1. Execute actions using 'tool_call'. Both 'tool_name' and 'arguments' are required.\n"
-        "2. If target app is not in Desktop Windows, use 'launch_app' to open it. If open but not in foreground, use 'focus_window'. When active, use keyboard_type or mouse_click to complete the task.\n"
-        "3. Once the requested goal is completed, output 'final' decision immediately.\n"
+        "2. If target app is not in Desktop Windows, use 'launch_app' to open it. If open but not in foreground, use 'focus_window'. When active, interact using keyboard_type, mouse_click, or mouse_drag.\n"
+        "3. For continuous drawing or dragging strokes in canvas/graphics apps, use 'mouse_drag' with start_x, start_y, end_x, end_y inside the window's drawable canvas (below window headers/ribbon).\n"
+        "4. Once the requested goal is completed, output 'final' decision immediately.\n"
     )
 
 def build_tools_catalog() -> str:
@@ -49,12 +50,16 @@ def build_observation_summary(observation: Dict[str, Any]) -> str:
     """
     lines = []
     
-    # Active window
+    # Active window with bounds
     active = observation.get("active_window")
     if active:
         title = active.get("title", "Unknown").encode("ascii", "ignore").decode("ascii").strip()
         proc = active.get("process", "unknown")
-        lines.append(f"Active Window: \"{title}\" ({proc})")
+        b = active.get("bounds", {})
+        if b and b.get("width", 0) > 0:
+            lines.append(f"Active Window: \"{title}\" ({proc}) | Bounds: x={b.get('x',0)}, y={b.get('y',0)}, w={b.get('width',0)}, h={b.get('height',0)}")
+        else:
+            lines.append(f"Active Window: \"{title}\" ({proc})")
     else:
         lines.append("Active Window: None (Desktop)")
 
@@ -87,6 +92,7 @@ def build_observation_summary(observation: Dict[str, Any]) -> str:
 def build_history_summary(recent_history: List[Dict[str, Any]], max_items: int = 5) -> str:
     """
     Builds a concise representation of recently executed actions and their semantic results.
+    Supports both StateTracker format (action, parameters, output, status) and legacy format.
     """
     history_slice = recent_history[-max_items:]
     if not history_slice:
@@ -94,13 +100,21 @@ def build_history_summary(recent_history: List[Dict[str, Any]], max_items: int =
     
     parts = []
     for idx, act in enumerate(history_slice):
-        tool_call = act.get("tool_call", {})
-        tool_res = act.get("tool_result", {})
-        t_name = tool_call.get("tool_name", "unknown")
-        args_str = json.dumps(tool_call.get("arguments", {}))
-        success = tool_res.get("success", False)
-        out = str(tool_res.get("output", "") or "").strip()
-        err = str(tool_res.get("error", "") or "").strip()
+        if "action" in act:
+            t_name = act.get("action", "unknown")
+            args_str = json.dumps(act.get("parameters", {}))
+            status = act.get("status", "unknown")
+            success = (status == "completed")
+            out = str(act.get("output", "") or "").strip()
+            err = str(act.get("error", "") or "").strip()
+        else:
+            tool_call = act.get("tool_call", {})
+            tool_res = act.get("tool_result", {})
+            t_name = tool_call.get("tool_name", "unknown")
+            args_str = json.dumps(tool_call.get("arguments", {}))
+            success = tool_res.get("success", False)
+            out = str(tool_res.get("output", "") or "").strip()
+            err = str(tool_res.get("error", "") or "").strip()
         
         res_summary = f"Success" if success else f"Failed: {err}"
         if out and success:

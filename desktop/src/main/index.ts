@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, screen, session } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, screen, session, Menu, MenuItem } from 'electron'
 import { join } from 'path'
 import * as path from 'path'
 import { spawn, ChildProcess } from 'child_process'
@@ -96,6 +96,27 @@ function createWindow(): void {
     }
   })
 
+  // Enable right-click context menu for cut, copy, paste, and selectAll
+  mainWindow.webContents.on('context-menu', (_, params) => {
+    const menu = new Menu()
+    if (params.isEditable) {
+      menu.append(new MenuItem({ role: 'undo' }))
+      menu.append(new MenuItem({ role: 'redo' }))
+      menu.append(new MenuItem({ type: 'separator' }))
+      menu.append(new MenuItem({ role: 'cut' }))
+      menu.append(new MenuItem({ role: 'copy' }))
+      menu.append(new MenuItem({ role: 'paste' }))
+      menu.append(new MenuItem({ type: 'separator' }))
+      menu.append(new MenuItem({ role: 'selectAll' }))
+    } else if (params.selectionText) {
+      menu.append(new MenuItem({ role: 'copy' }))
+      menu.append(new MenuItem({ role: 'selectAll' }))
+    }
+    if (menu.items.length > 0) {
+      menu.popup()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -112,6 +133,24 @@ function createWindow(): void {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
+
+  // Register standard Edit application menu to enable global Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+A
+  const editTemplate: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ]
+  const appMenu = Menu.buildFromTemplate(editTemplate)
+  Menu.setApplicationMenu(appMenu)
 
   // Set permission request handler for media/microphone access
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {

@@ -42,6 +42,11 @@ body {
   user-select: none;
 }
 
+input, textarea, select, [contenteditable="true"], pre, code, .feed-item, .log-container, .prompt-text, .prompt-args, .step-desc, .log-line {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
 #root {
   height: 100vh;
   width: 100vw;

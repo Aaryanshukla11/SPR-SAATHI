@@ -38,18 +38,30 @@ class LaunchAppTool(BaseTool):
             }
             
         try:
-            # Try launching
-            # Expand environment variables like %SystemRoot%
             expanded_name = os.path.expandvars(app_name)
-            if hasattr(os, "startfile"):
+            clean_name = expanded_name.lower().strip()
+            
+            # Map packaged Windows 11 AppX modern apps to shell AppsFolder identifiers for reliable GUI window creation
+            KNOWN_APPS_MAP = {
+                "mspaint": "shell:AppsFolder\\Microsoft.Paint_8wekyb3d8bbwe!App",
+                "mspaint.exe": "shell:AppsFolder\\Microsoft.Paint_8wekyb3d8bbwe!App",
+                "paint": "shell:AppsFolder\\Microsoft.Paint_8wekyb3d8bbwe!App",
+                "calc": "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+                "calc.exe": "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+                "calculator": "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+            }
+            
+            if clean_name in KNOWN_APPS_MAP:
+                subprocess.Popen(["explorer.exe", KNOWN_APPS_MAP[clean_name]])
+            elif hasattr(os, "startfile"):
                 try:
                     os.startfile(expanded_name)
                 except Exception:
-                    subprocess.Popen(expanded_name, shell=True)
+                    subprocess.Popen(f'cmd.exe /c start "" "{expanded_name}"', shell=True)
             else:
-                subprocess.Popen(expanded_name, shell=True)
+                subprocess.Popen(f'cmd.exe /c start "" "{expanded_name}"', shell=True)
             import time
-            time.sleep(1.0)
+            time.sleep(2.0)
             msg = f"Application '{app_name}' launched successfully."
             return {
                 "call_id": "",

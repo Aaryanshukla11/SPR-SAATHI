@@ -10,7 +10,7 @@ class MouseMoveTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Move the mouse cursor to a specific coordinate on the screen or relative to a window."
+        return "Move the mouse cursor to a specific coordinate on the screen or relative to a window (does not press buttons; for drawing or dragging use mouse_drag)."
 
     @property
     def category(self) -> str:
@@ -30,10 +30,12 @@ class MouseMoveTool(BaseTool):
         }
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(arguments)
-        if not resolved:
+        resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+        if not resolved or not coords:
             return {"call_id": "", "success": False, "output": "", "error": err}
             
+        abs_x = coords["x"]
+        abs_y = coords["y"]
         duration = arguments.get("duration_ms", 0)
         try:
             win32_utils.mouse_move(abs_x, abs_y, duration)
@@ -71,10 +73,12 @@ class MouseClickTool(BaseTool):
         }
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(arguments)
-        if not resolved:
+        resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+        if not resolved or not coords:
             return {"call_id": "", "success": False, "output": "", "error": err}
             
+        abs_x = coords["x"]
+        abs_y = coords["y"]
         button = arguments.get("button", "left")
         count = arguments.get("click_count", 1)
         try:
@@ -112,10 +116,12 @@ class MouseDoubleClickTool(BaseTool):
         }
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(arguments)
-        if not resolved:
+        resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+        if not resolved or not coords:
             return {"call_id": "", "success": False, "output": "", "error": err}
             
+        abs_x = coords["x"]
+        abs_y = coords["y"]
         button = arguments.get("button", "left")
         try:
             win32_utils.mouse_double_click(abs_x, abs_y, button)
@@ -152,10 +158,12 @@ class MouseDownTool(BaseTool):
         }
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(arguments)
-        if not resolved:
+        resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+        if not resolved or not coords:
             return {"call_id": "", "success": False, "output": "", "error": err}
             
+        abs_x = coords["x"]
+        abs_y = coords["y"]
         button = arguments.get("button", "left")
         try:
             win32_utils.mouse_move(abs_x, abs_y)
@@ -194,10 +202,12 @@ class MouseUpTool(BaseTool):
         }
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(arguments)
-        if not resolved:
+        resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+        if not resolved or not coords:
             return {"call_id": "", "success": False, "output": "", "error": err}
             
+        abs_x = coords["x"]
+        abs_y = coords["y"]
         button = arguments.get("button", "left")
         try:
             win32_utils.mouse_move(abs_x, abs_y)
@@ -216,7 +226,7 @@ class MouseDragTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Drag mouse cursor from start to end coordinates."
+        return "Drag mouse cursor from start to end coordinates while holding down a mouse button (essential for drawing lines, dragging objects, sliders, and canvas strokes)."
 
     @property
     def category(self) -> str:
@@ -239,14 +249,14 @@ class MouseDragTool(BaseTool):
         }
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        resolved, abs_x, abs_y, err = win32_utils.resolve_coordinates(arguments)
-        if not resolved:
+        resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+        if not resolved or not coords:
             return {"call_id": "", "success": False, "output": "", "error": err}
             
-        start_x = arguments.get("start_x")
-        start_y = arguments.get("start_y")
-        end_x = arguments.get("end_x")
-        end_y = arguments.get("end_y")
+        start_x = coords["start_x"]
+        start_y = coords["start_y"]
+        end_x = coords["end_x"]
+        end_y = coords["end_y"]
         duration = arguments.get("duration_ms", 200)
         button = arguments.get("button", "left")
         try:

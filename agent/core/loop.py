@@ -8,6 +8,7 @@ from .executor import ToolExecutor
 from agent.control.takeover import TakeoverManager
 from agent.core import win32_utils
 from agent.models.base import validate_model_decision
+from agent.core.trace import ExecutionTracer
 
 class AgentLoop:
     def __init__(
@@ -27,6 +28,7 @@ class AgentLoop:
         self._cancellation_requested = False
         self._running_task: Optional[asyncio.Task] = None
         self._user_response_future: Optional[asyncio.Future] = None
+        self.tracer: Optional[ExecutionTracer] = None
         
         # Safety Limits (Requirement 26)
         self.max_steps = 50
@@ -177,6 +179,9 @@ class AgentLoop:
         consecutive_replans = 0
         step_attempts: Dict[str, int] = {}
         
+        # Initialize generic observational tracer
+        self.tracer = ExecutionTracer(task)
+
         # Generate initial high-level plan (Requirement 12)
         self.state_tracker.update_status("planning")
         await self._emit_event("task.planning", "Decomposing goal into plan checklist...")
@@ -255,6 +260,9 @@ class AgentLoop:
                 obs_message = f"Active window: '{active_window.get('title') if active_window else 'Desktop'}'"
                 await self._emit_event("task.observation", f"Observed state: {obs_message}", obs)
 
+                if self.tracer:
+                    self.tracer.start_step(self.state_tracker.attempt_count + 1, obs, obs_message)
+
                 # 4. SELECT NEXT ACTION / DECISION (Requirement 11 & 12)
                 model = self.planner.model_provider
                 await self._emit_event("status_change", "Thinking...")
@@ -275,6 +283,10 @@ class AgentLoop:
                     observation=obs,
                     recent_history=self.state_tracker.action_history
                 )
+                
+                # Generic model decision tracing (observational only)
+                if self.tracer:
+                    self.tracer.record_model_decision(decision.get("_raw_response", decision), decision)
                 
                 # 5. VALIDATION (Requirement 3 & 10)
                 is_valid, err_msg = validate_model_decision(decision)
@@ -381,9 +393,27 @@ class AgentLoop:
                     self.state_tracker.update_status("acting")
                     await self._emit_event("tool.started", f"Acting: executing {tool_name}")
                     
+                    active_win_before = win32_utils.get_active_window_details()
                     start_time = time.time()
                     result = await self.executor.execute_action(tool_name, args, call_id)
                     duration_ms = int((time.time() - start_time) * 1000)
+                    active_win_after = win32_utils.get_active_window_details()
+
+                    # Compute internal coordinate transformation if any was performed
+                    transformed_coords = None
+                    if any(k in args for k in ("x", "y", "start_x", "start_y")):
+                        _, transformed_coords, _ = win32_utils.resolve_coordinates(args)
+
+                    if self.tracer:
+                        self.tracer.record_tool_execution(
+                            tool_name,
+                            args,
+                            transformed_coords,
+                            active_win_before,
+                            active_win_after,
+                            result,
+                            duration_ms
+                        )
 
                     print(f"[DEVELOPMENT LOG] === TOOL_RESULT ===")
                     print(f"  Tool: {tool_name}")
@@ -494,3 +524,9 @@ class AgentLoop:
             self.state_tracker.error_message = str(e)
             win32_utils.release_all_buttons()
             await self._emit_event("task.failed", f"Autonomous task failed: {str(e)}", {"error": str(e)})
+        finally:
+            if self.tracer:
+                try:
+                    self.tracer.save_trace("agent_execution_trace.json")
+                except Exception:
+                    pass

@@ -5,6 +5,16 @@ from typing import Dict, Any, List, Optional, Tuple
 
 IS_WINDOWS = sys.platform == "win32"
 
+if IS_WINDOWS:
+    try:
+        # Enable Per-Monitor V2 DPI Awareness for exact hardware pixel mapping
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 # Constants for Input type
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
@@ -204,11 +214,23 @@ def send_mouse_event(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
     inp = INPUT(type=INPUT_MOUSE, u=u)
     ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
+def send_mouse_move_absolute(x: int, y: int):
+    if not IS_WINDOWS:
+        return
+    screen_w, screen_h = get_screen_size()
+    norm_x = int((x * 65535) / (screen_w - 1)) if screen_w > 1 else 0
+    norm_y = int((y * 65535) / (screen_h - 1)) if screen_h > 1 else 0
+    send_mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx=norm_x, dy=norm_y)
+
 def mouse_move(x: int, y: int, duration_ms: int = 0):
     if not IS_WINDOWS:
         return
     if duration_ms <= 0:
-        ctypes.windll.user32.SetCursorPos(x, y)
+        if HELD_BUTTONS:
+            send_mouse_move_absolute(x, y)
+        else:
+            ctypes.windll.user32.SetCursorPos(x, y)
+            send_mouse_move_absolute(x, y)
     else:
         # Interpolate mouse movement smoothly
         start_x, start_y = get_cursor_position()
@@ -217,7 +239,11 @@ def mouse_move(x: int, y: int, duration_ms: int = 0):
             t = i / steps
             curr_x = int(start_x + (x - start_x) * t)
             curr_y = int(start_y + (y - start_y) * t)
-            ctypes.windll.user32.SetCursorPos(curr_x, curr_y)
+            if HELD_BUTTONS:
+                send_mouse_move_absolute(curr_x, curr_y)
+            else:
+                ctypes.windll.user32.SetCursorPos(curr_x, curr_y)
+                send_mouse_move_absolute(curr_x, curr_y)
             time.sleep(0.01)
 
 def mouse_down(button: str = "left"):
@@ -258,13 +284,26 @@ def mouse_double_click(x: int, y: int, button: str = "left"):
     mouse_click(x, y, button, click_count=2)
 
 def mouse_drag(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 200, button: str = "left"):
+    # 1. Move to start position
     mouse_move(start_x, start_y)
-    time.sleep(0.1)
+    time.sleep(0.05)
+    # 2. Press down
     mouse_down(button)
     time.sleep(0.05)
-    mouse_move(end_x, end_y, duration_ms)
-    time.sleep(0.05)
-    mouse_up(button)
+    try:
+        # 3. Smoothly move to end position using SendInput absolute movement (maintains down state across canvas)
+        steps = max(10, duration_ms // 15)
+        for i in range(1, steps + 1):
+            t = i / steps
+            curr_x = int(start_x + (end_x - start_x) * t)
+            curr_y = int(start_y + (end_y - start_y) * t)
+            send_mouse_move_absolute(curr_x, curr_y)
+            time.sleep(0.015)
+        time.sleep(0.05)
+    finally:
+        # 4. Release button unconditionally
+        mouse_up(button)
+        time.sleep(0.05)
 
 def release_all_buttons():
     # Releases any mouse button currently registered in the HELD_BUTTONS set
@@ -433,15 +472,16 @@ def close_window(hwnd: int) -> bool:
     success = ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
     return bool(success)
 
-def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[int], Optional[int], Optional[str]]:
+def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, int]], Optional[str]]:
     """
     Checks if a target window is specified in the arguments.
-    If so, converts x, y relative coords to absolute coords.
+    If so, converts x, y relative coords to absolute coords WITHOUT mutating the original arguments dict.
+    Brings the target window to the foreground if specified.
     Checks:
     - If window exists.
     - If window is minimized or invisible where interaction is impossible.
     - If window bounds are valid.
-    Returns: (success, abs_x, abs_y, error_message)
+    Returns: (success, resolved_coords_dict, error_message)
     """
     target_window = arguments.get("target_window")
     if not target_window and "target" in arguments:
@@ -461,8 +501,8 @@ def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[int],
         
     if not target_window:
         if is_drag:
-            return True, None, None, None
-        return True, x, y, None
+            return True, {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}, None
+        return True, {"x": x, "y": y}, None
 
     # Lookup window
     windows = list_desktop_windows()
@@ -476,20 +516,23 @@ def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[int],
             break
             
     if not target_hwnd:
-        return False, None, None, f"Target window '{target_window}' not found on the desktop."
+        return False, None, f"Target window '{target_window}' not found on the desktop."
+        
+    # Ensure target window is brought to foreground
+    focus_window(target_hwnd)
         
     # Check if window is minimized or invisible
     if IS_WINDOWS:
         if ctypes.windll.user32.IsIconic(target_hwnd):
-            return False, None, None, f"Target window '{target_window}' is minimized. Cannot execute coordinate-relative inputs."
+            return False, None, f"Target window '{target_window}' is minimized. Cannot execute coordinate-relative inputs."
         if not ctypes.windll.user32.IsWindowVisible(target_hwnd):
-            return False, None, None, f"Target window '{target_window}' is invisible."
+            return False, None, f"Target window '{target_window}' is invisible."
             
     bounds = target_win["bounds"]
     if bounds["width"] <= 0 or bounds["height"] <= 0:
-        return False, None, None, f"Target window '{target_window}' has invalid boundaries ({bounds['width']}x{bounds['height']})."
+        return False, None, f"Target window '{target_window}' has invalid boundaries ({bounds['width']}x{bounds['height']})."
         
-    # Convert coordinates
+    # Convert coordinates WITHOUT in-place mutation of caller's arguments dictionary
     if is_drag:
         abs_start_x = bounds["x"] + start_x
         abs_start_y = bounds["y"] + start_y
@@ -499,24 +542,23 @@ def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[int],
         screen_w, screen_h = get_screen_size()
         if not (0 <= abs_start_x < screen_w) or not (0 <= abs_start_y < screen_h) or \
            not (0 <= abs_end_x < screen_w) or not (0 <= abs_end_y < screen_h):
-            return False, None, None, f"Converted drag coordinates (start: {abs_start_x},{abs_start_y}; end: {abs_end_x},{abs_end_y}) are outside screen boundaries."
+            return False, None, f"Converted drag coordinates (start: {abs_start_x},{abs_start_y}; end: {abs_end_x},{abs_end_y}) are outside screen boundaries."
             
-        arguments["start_x"] = abs_start_x
-        arguments["start_y"] = abs_start_y
-        arguments["end_x"] = abs_end_x
-        arguments["end_y"] = abs_end_y
-        return True, None, None, None
+        return True, {
+            "start_x": abs_start_x,
+            "start_y": abs_start_y,
+            "end_x": abs_end_x,
+            "end_y": abs_end_y
+        }, None
     else:
         abs_x = bounds["x"] + x
         abs_y = bounds["y"] + y
         
         screen_w, screen_h = get_screen_size()
         if not (0 <= abs_x < screen_w) or not (0 <= abs_y < screen_h):
-            return False, None, None, f"Converted coordinates ({abs_x}, {abs_y}) are outside screen boundaries."
+            return False, None, f"Converted coordinates ({abs_x}, {abs_y}) are outside screen boundaries."
             
-        arguments["x"] = abs_x
-        arguments["y"] = abs_y
-        return True, abs_x, abs_y, None
+        return True, {"x": abs_x, "y": abs_y}, None
 
 def get_installed_applications():
     """
@@ -524,6 +566,7 @@ def get_installed_applications():
     Start Menu programs, and AppX store apps on the system.
     """
     import sys
+    import os
     if sys.platform != "win32":
         return [
             {"name": "Docker Desktop", "version": "4.71.0", "publisher": "Docker Inc.", "key": "docker"},
