@@ -43,6 +43,8 @@ class LaunchAppTool(BaseTool):
             
             # Map packaged Windows 11 AppX modern apps to shell AppsFolder identifiers for reliable GUI window creation
             KNOWN_APPS_MAP = {
+                "notepad": "shell:AppsFolder\\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App",
+                "notepad.exe": "shell:AppsFolder\\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App",
                 "mspaint": "shell:AppsFolder\\Microsoft.Paint_8wekyb3d8bbwe!App",
                 "mspaint.exe": "shell:AppsFolder\\Microsoft.Paint_8wekyb3d8bbwe!App",
                 "paint": "shell:AppsFolder\\Microsoft.Paint_8wekyb3d8bbwe!App",

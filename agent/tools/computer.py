@@ -278,7 +278,7 @@ class KeyboardTypeTool(BaseTool):
 
     @property
     def category(self) -> str:
-        return "computer"
+        return "keyboard"
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -292,18 +292,24 @@ class KeyboardTypeTool(BaseTool):
 
     async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         text = arguments.get("text", "")
+        call_id = arguments.get("call_id", "")
+        from agent.core.keyboard_trace import KEYBOARD_TRACER
+        KEYBOARD_TRACER.record_tool_call(call_id, text)
         try:
-            win32_utils.type_text(text)
+            if call_id:
+                win32_utils.type_text(text, call_id=call_id)
+            else:
+                win32_utils.type_text(text)
             msg = f"Typed text: '{text}'"
             return {
-                "call_id": "",
+                "call_id": call_id,
                 "success": True,
                 "output": msg,
                 "error": None
             }
         except Exception as e:
             return {
-                "call_id": "",
+                "call_id": call_id,
                 "success": False,
                 "output": "",
                 "error": f"Failed to type keyboard text: {str(e)}"
