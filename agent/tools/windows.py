@@ -211,3 +211,44 @@ class FocusWindowTool(BaseTool):
                 "output": "",
                 "error": f"Error occurred during focus operation: {str(e)}"
             }
+
+
+class TakeScreenshotTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "take_screenshot"
+
+    @property
+    def description(self) -> str:
+        return "Capture a visual screenshot and active window observation of the desktop."
+
+    @property
+    def category(self) -> str:
+        return "windows"
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {}
+        }
+
+    async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        from agent.core.vision import SCREEN_OBSERVER
+        try:
+            obs = SCREEN_OBSERVER.capture_observation()
+            active_t = obs.get("active_window", {}).get("title", "Desktop") if obs.get("active_window") else "Desktop"
+            msg = f"Screenshot captured. Active window: '{active_t}', Visual image available: {obs.get('image_available', False)}"
+            return {
+                "call_id": "",
+                "success": True,
+                "output": msg,
+                "error": None
+            }
+        except Exception as e:
+            return {
+                "call_id": "",
+                "success": False,
+                "output": "",
+                "error": f"Failed to capture screenshot: {str(e)}"
+            }

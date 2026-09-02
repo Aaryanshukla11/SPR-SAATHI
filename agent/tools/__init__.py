@@ -5,10 +5,14 @@ from .computer import (
     MouseDownTool, MouseUpTool, MouseDragTool,
     KeyboardTypeTool, KeyboardPressTool, KeyboardHotkeyTool
 )
-from .windows import LaunchAppTool, ListWindowsTool, FocusWindowTool
+from .windows import LaunchAppTool, ListWindowsTool, FocusWindowTool, TakeScreenshotTool
 from .filesystem import CreateFileTool, ReadFileTool
 from .terminal import CmdTool, PowerShellTool
 from .browser import OpenBrowserUrlTool
+
+from .drawing import (
+    DrawLineTool, DrawPolylineTool, DrawRectangleTool, DrawShapeTool
+)
 
 def get_all_tools() -> Dict[str, BaseTool]:
     tools = [
@@ -18,12 +22,17 @@ def get_all_tools() -> Dict[str, BaseTool]:
         MouseDownTool(),
         MouseUpTool(),
         MouseDragTool(),
+        DrawLineTool(),
+        DrawPolylineTool(),
+        DrawRectangleTool(),
+        DrawShapeTool(),
         KeyboardTypeTool(),
         KeyboardPressTool(),
         KeyboardHotkeyTool(),
         LaunchAppTool(),
         ListWindowsTool(),
         FocusWindowTool(),
+        TakeScreenshotTool(),
         CreateFileTool(),
         ReadFileTool(),
         CmdTool(),

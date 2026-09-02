@@ -127,15 +127,58 @@ async def test_single_tool_execution_guarantee(tmp_path):
     executor = ToolExecutor(tools, broker, tm)
 
     with patch("agent.core.win32_utils.type_text") as mock_type:
-        res = await executor.execute_action("keyboard_type", {"text": "Exact Single Invocation"})
+        res = await executor.execute_action("keyboard_type", {"text": "Exact Single Invocation"}, call_id="call_123")
         assert res["success"] is True
-        # Verify type_text was invoked exactly ONCE with exact arguments
-        mock_type.assert_called_once_with("Exact Single Invocation")
+        # Verify type_text was invoked exactly ONCE with exact arguments and call_id
+        mock_type.assert_called_once_with("Exact Single Invocation", call_id="call_123")
 
-def test_partial_injection_detection():
-    # Mock SendInput to simulate partial event injection on fallback path
-    with patch("agent.core.win32_utils.set_clipboard_text", return_value=False):
-        with patch("ctypes.windll.user32.SendInput", return_value=1):
-            with pytest.raises(RuntimeError) as exc_info:
-                win32_utils.type_text("Test", chunk_size=10)
-            assert "partial injection failure" in str(exc_info.value)
+@pytest.mark.asyncio
+async def test_executor_idempotency_prevents_duplicate_execution(tmp_path):
+    from agent.core.state import StateTracker
+    cfg_file = os.path.join(tmp_path, "permissions_test.json")
+    pm = PolicyManager(config_path=cfg_file)
+    pm.update_policy("keyboard", "allow")
+    st = StateTracker()
+    tm = TakeoverManager()
+    broker = PermissionBroker(pm, st)
+    tools = get_all_tools()
+    executor = ToolExecutor(tools, broker, tm)
+
+    with patch("agent.core.win32_utils.type_text") as mock_type:
+        # First execution
+        res1 = await executor.execute_action("keyboard_type", {"text": "Hello"}, call_id="duplicate_test_1")
+        assert res1["success"] is True
+        assert mock_type.call_count == 1
+
+        # Second dispatch with identical call_id (e.g. from websocket replay or retry)
+        res2 = await executor.execute_action("keyboard_type", {"text": "Hello"}, call_id="duplicate_test_1")
+        assert res2["success"] is True
+        assert res2.get("duplicate_dispatch_prevented") is True
+        # Must NOT have invoked type_text a second time!
+        assert mock_type.call_count == 1
+
+def test_clipboard_preservation_and_tracing():
+    from agent.core.keyboard_trace import KEYBOARD_TRACER
+    KEYBOARD_TRACER.clear()
+    
+    # Test setting initial clipboard
+    initial_text = "ORIGINAL_USER_CLIPBOARD_DATA_123"
+    win32_utils.set_clipboard_text(initial_text)
+    assert win32_utils.get_clipboard_text() == initial_text
+    
+    # Perform type_text with mock SendInput / hotkey to avoid sending keys to actual active window
+    with patch("agent.core.win32_utils.send_input_keyboard"):
+        win32_utils.type_text("INJECTED_AGENT_TEXT_456", call_id="trace_test_1")
+        
+    # Verify clipboard was restored back to original text
+    restored_text = win32_utils.get_clipboard_text()
+    assert restored_text == initial_text
+    
+    # Verify trace recorded
+    traces = KEYBOARD_TRACER.get_traces_for_call_id("trace_test_1")
+    assert len(traces) > 0
+    completed = next((t for t in traces if t["type"] == "type_text_completed"), None)
+    assert completed is not None
+    assert completed["typing_path"] == "win32_clipboard_paste"
+    assert completed["text_length"] == len("INJECTED_AGENT_TEXT_456")
+    assert completed["clipboard_restored"] is True

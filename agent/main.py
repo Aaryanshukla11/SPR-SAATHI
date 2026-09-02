@@ -20,6 +20,7 @@ from agent.permissions.broker import PermissionBroker
 from agent.control.takeover import TakeoverManager
 from agent.models.local import LocalModelProvider
 from agent.models.api import ApiModelProvider
+from agent.core import win32_utils
 
 # Initialize core modules
 state_tracker = StateTracker()
@@ -27,8 +28,11 @@ policy_manager = PolicyManager()
 permission_broker = PermissionBroker(policy_manager, state_tracker)
 takeover_manager = TakeoverManager()
 
-# Default to API model (Gemini)
-current_model_provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
+# Default Model Provider (local Ollama by default if no cloud API keys present)
+if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+    current_model_provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
+else:
+    current_model_provider = LocalModelProvider(model_name="qwen2.5:latest")
 planner = RuleBasedPlanner(current_model_provider)
 tools = get_all_tools()
 executor = ToolExecutor(tools, permission_broker, takeover_manager)
@@ -126,6 +130,15 @@ import datetime
 class StartTaskRequest(BaseModel):
     task: str
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    message: str
+    history: Optional[List[ChatMessage]] = None
+    system_instruction: Optional[str] = None
+
 class PermissionResponse(BaseModel):
     request_id: str
     decision: str  # "allow" | "deny"
@@ -149,6 +162,91 @@ async def health():
 @app.get("/api/state")
 async def get_state():
     return state_tracker.to_dict()
+
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    user_msg = req.message.strip()
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    
+    await broadcast_event({
+        "event_type": "chat.started",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "task_id": None,
+        "message": f"User: {user_msg[:100]}",
+        "payload": {"message": user_msg}
+    })
+
+    default_system = (
+        "You are SPR SAATHI in Chatbot Mode — a highly capable, knowledgeable, and helpful AI assistant (similar to ChatGPT).\n"
+        "Your role is to assist the user by having natural conversations, answering questions across any topic, explaining concepts clearly, "
+        "providing thoughtful coding help and debugging, and formatting answers in clean GitHub-flavored Markdown with code blocks where helpful.\n"
+        "IMPORTANT: In this mode, you are operating strictly as a conversational chatbot. You do not control the user's computer or execute OS tools."
+    )
+    sys_instruction = req.system_instruction or default_system
+
+    if req.history:
+        history_lines = []
+        for h in req.history:
+            role_label = "User" if h.role == "user" else "Assistant"
+            history_lines.append(f"{role_label}: {h.content}")
+        history_lines.append(f"User: {user_msg}")
+        full_prompt = "\n\n".join(history_lines)
+    else:
+        full_prompt = user_msg
+
+    try:
+        response_obj = await current_model_provider.generate(
+            prompt=full_prompt,
+            system_instruction=sys_instruction
+        )
+        response_text = response_obj.text if hasattr(response_obj, "text") else str(response_obj)
+
+        await broadcast_event({
+            "event_type": "chat.response",
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "task_id": None,
+            "message": "Chat response generated.",
+            "payload": {"response": response_text}
+        })
+
+        return {
+            "status": "success",
+            "response": response_text,
+            "model": getattr(current_model_provider, "model_name", "unknown")
+        }
+    except Exception as e:
+        err_msg = str(e)
+        if "API_CREDENTIALS_MISSING" in err_msg:
+            friendly_err = "⚠️ **API Key Missing**: The selected cloud model requires an API key. Please configure your API key in **Settings**, or select one of your local installed Ollama models (such as `Qwen 2.5 7B` or `Llama 3.2 Vision`) from the model dropdown."
+        elif "MODEL_UNAVAILABLE" in err_msg or "Connection refused" in err_msg or "11434" in err_msg:
+            friendly_err = "⚠️ **Local Model Unavailable**: Could not connect to local Ollama on port 11434. Please ensure Ollama is running (`ollama serve`)."
+        else:
+            friendly_err = f"⚠️ **Chatbot Error**: {err_msg}"
+
+        await broadcast_event({
+            "event_type": "chat.error",
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "task_id": None,
+            "message": f"Chat error: {err_msg}",
+            "payload": {"error": friendly_err}
+        })
+        return {
+            "status": "error",
+            "response": friendly_err,
+            "model": getattr(current_model_provider, "model_name", "unknown")
+        }
+
+@app.post("/api/chat/clear")
+async def clear_chat_endpoint():
+    await broadcast_event({
+        "event_type": "chat.cleared",
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "task_id": None,
+        "message": "Chat history cleared.",
+        "payload": {}
+    })
+    return {"status": "cleared"}
 
 @app.post("/api/task/start")
 async def start_task(req: StartTaskRequest):
@@ -329,9 +427,48 @@ async def get_ollama_models():
         req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
         with urllib.request.urlopen(req, timeout=2.0) as response:
             data = json.loads(response.read().decode())
-            return {"status": "success", "models": [m.get("name", "") for m in data.get("models", [])]}
+            models_list = []
+            for m in data.get("models", []):
+                name = m.get("name", "")
+                if not name:
+                    continue
+                details = m.get("details", {})
+                size_bytes = m.get("size", 0)
+                size_gb = round(size_bytes / (1024 * 1024 * 1024), 1)
+                param_size = details.get("parameter_size", "")
+                family = details.get("family", "")
+                caps = m.get("capabilities", [])
+                is_vision = "vision" in caps or "vision" in name.lower() or "llava" in name.lower() or "mllama" in family.lower() or "vl" in name.lower()
+                is_embedding = "embedding" in caps or "embed" in name.lower()
+                
+                # Format a user-friendly specs string
+                specs_parts = [f"Size: {size_gb} GB"]
+                if param_size:
+                    specs_parts.append(f"Params: {param_size}")
+                if is_vision:
+                    specs_parts.append("Vision Supported")
+                if family:
+                    specs_parts.append(f"Family: {family}")
+                specs_str = " • ".join(specs_parts)
+
+                models_list.append({
+                    "name": name,
+                    "tag": name,
+                    "size_gb": size_gb,
+                    "parameter_size": param_size,
+                    "family": family,
+                    "capabilities": caps,
+                    "is_vision": is_vision,
+                    "is_embedding": is_embedding,
+                    "specs": specs_str
+                })
+            return {
+                "status": "success", 
+                "models": [m["name"] for m in models_list],
+                "model_details": models_list
+            }
     except Exception as e:
-        return {"status": "error", "message": str(e), "models": []}
+        return {"status": "error", "message": str(e), "models": [], "model_details": []}
 
 @app.get("/api/config/keys")
 async def get_configured_keys():

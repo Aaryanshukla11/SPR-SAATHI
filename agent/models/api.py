@@ -36,10 +36,17 @@ class ApiModelProvider(BaseModelProvider):
             if "haiku" in name:
                 model = "claude-3-5-haiku-20241022"
             return "anthropic", model
-        else:
-            return "openai", "gpt-4o"
+    @property
+    def capabilities(self) -> Dict[str, Any]:
+        return {
+            "supports_tool_calling": True,
+            "supports_structured_output": True,
+            "supports_vision": True,
+            "supports_streaming": False,
+            "context_window": 128000
+        }
 
-    async def _make_api_call(self, system_instruction: str, user_content: str) -> str:
+    async def _make_api_call(self, system_instruction: str, user_content: str, image_base64: Optional[str] = None, require_json: bool = False) -> str:
         provider, model = self._resolve_provider_and_model()
         api_key = self._get_api_key(provider)
         if not api_key:
@@ -52,15 +59,27 @@ class ApiModelProvider(BaseModelProvider):
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
-                payload = {
+                
+                # Format user content with multimodal image if available
+                if image_base64:
+                    user_msg_content: Any = [
+                        {"type": "text", "text": user_content},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}", "detail": "high"}}
+                    ]
+                else:
+                    user_msg_content = user_content
+
+                payload: Dict[str, Any] = {
                     "model": model,
                     "messages": [
                         {"role": "system", "content": system_instruction},
-                        {"role": "user", "content": user_content}
+                        {"role": "user", "content": user_msg_content}
                     ],
-                    "temperature": 0.0,
-                    "response_format": {"type": "json_object"}
+                    "temperature": 0.0
                 }
+                if require_json:
+                    payload["response_format"] = {"type": "json_object"}
+
                 res = await client.post(url, json=payload, headers=headers)
                 if res.status_code != 200:
                     raise RuntimeError(f"OpenAI API call failed with status {res.status_code}: {res.text}")
@@ -71,17 +90,28 @@ class ApiModelProvider(BaseModelProvider):
                 # Maps gemini models to beta API endpoints
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
                 headers = {"Content-Type": "application/json"}
+                
+                parts: List[Dict[str, Any]] = [{"text": user_content}]
+                if image_base64:
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": "image/jpeg",
+                            "data": image_base64
+                        }
+                    })
+
+                gen_config: Dict[str, Any] = {"temperature": 0.0}
+                if require_json:
+                    gen_config["responseMimeType"] = "application/json"
+
                 payload = {
                     "contents": [
-                        {"role": "user", "parts": [{"text": user_content}]}
+                        {"role": "user", "parts": parts}
                     ],
                     "systemInstruction": {
                         "parts": [{"text": system_instruction}]
                     },
-                    "generationConfig": {
-                        "responseMimeType": "application/json",
-                        "temperature": 0.0
-                    }
+                    "generationConfig": gen_config
                 }
                 res = await client.post(url, json=payload, headers=headers)
                 if res.status_code != 200:
@@ -96,12 +126,28 @@ class ApiModelProvider(BaseModelProvider):
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json"
                 }
+                
+                if image_base64:
+                    user_msg_content = [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_base64
+                            }
+                        },
+                        {"type": "text", "text": user_content}
+                    ]
+                else:
+                    user_msg_content = user_content
+
                 payload = {
                     "model": model,
                     "max_tokens": 4096,
                     "system": system_instruction,
                     "messages": [
-                        {"role": "user", "content": user_content}
+                        {"role": "user", "content": user_msg_content}
                     ],
                     "temperature": 0.0
                 }
@@ -117,7 +163,7 @@ class ApiModelProvider(BaseModelProvider):
     async def generate(self, prompt: str, system_instruction: Optional[str] = None) -> ModelResponse:
         system = system_instruction or "You are a helpful assistant."
         try:
-            content = await self._make_api_call(system, prompt)
+            content = await self._make_api_call(system, prompt, require_json=False)
             return ModelResponse(text=content, raw_response={"provider_model": self.model_name})
         except Exception as e:
             err_str = str(e)
@@ -129,7 +175,7 @@ class ApiModelProvider(BaseModelProvider):
         system = system_instruction or "You are a helpful assistant."
         user = f"Available tools:\n{json.dumps(tools)}\n\nPrompt:\n{prompt}"
         try:
-            content = await self._make_api_call(system, user)
+            content = await self._make_api_call(system, user, require_json=True)
             tool_calls = []
             try:
                 parsed = json.loads(content.strip())
@@ -149,7 +195,8 @@ class ApiModelProvider(BaseModelProvider):
         goal: str, 
         plan: List[Dict[str, Any]], 
         observation: Dict[str, Any], 
-        recent_history: List[Dict[str, Any]]
+        recent_history: List[Dict[str, Any]],
+        image_base64: Optional[str] = None
     ) -> Dict[str, Any]:
         from agent.core.context import build_compact_context
         system_instruction, user_content = build_compact_context(
@@ -159,8 +206,10 @@ class ApiModelProvider(BaseModelProvider):
             recent_history=recent_history
         )
 
+        img_b64 = image_base64 if image_base64 is not None else observation.get("image_base64")
+
         try:
-            content = await self._make_api_call(system_instruction, user_content)
+            content = await self._make_api_call(system_instruction, user_content, image_base64=img_b64)
             from .base import clean_and_normalize_decision
             decision = clean_and_normalize_decision(content)
             return decision

@@ -12,8 +12,15 @@ class ToolExecutor:
         self.takeover_manager = takeover_manager
         self._execution_lock = asyncio.Lock()
         self._active_call_ids: Set[str] = set()
+        self._completed_call_results: Dict[str, Dict[str, Any]] = {}
 
     async def execute_action(self, tool_name: str, arguments: Dict[str, Any], call_id: str = "") -> Dict[str, Any]:
+        # Idempotency check: if this exact call_id has already completed execution, return cached result
+        if call_id and call_id in self._completed_call_results:
+            cached = dict(self._completed_call_results[call_id])
+            cached["duplicate_dispatch_prevented"] = True
+            return cached
+
         # Enforce action ID idempotency (reject duplicate concurrent execution of same call_id)
         if call_id and call_id in self._active_call_ids:
             return {
@@ -25,8 +32,16 @@ class ToolExecutor:
 
         # Global async serialization: guarantee only one computer/system action runs at a time
         async with self._execution_lock:
+            # Re-check completed call IDs after acquiring lock
+            if call_id and call_id in self._completed_call_results:
+                cached = dict(self._completed_call_results[call_id])
+                cached["duplicate_dispatch_prevented"] = True
+                return cached
+
             if call_id:
                 self._active_call_ids.add(call_id)
+                # Pass call_id into arguments for tool-level tracing
+                arguments["call_id"] = call_id
             try:
                 # Enforce tool-level input lock during human control
                 if self.takeover_manager and self.takeover_manager.is_takeover_active:
@@ -77,14 +92,23 @@ class ToolExecutor:
                 try:
                     result = await tool.execute(arguments)
                     result["call_id"] = call_id
+                    if call_id:
+                        if len(self._completed_call_results) > 500:
+                            self._completed_call_results.pop(next(iter(self._completed_call_results)))
+                        self._completed_call_results[call_id] = result
                     return result
                 except Exception as e:
-                    return {
+                    err_res = {
                         "call_id": call_id,
                         "success": False,
                         "output": "",
                         "error": f"Tool execution failed: {str(e)}"
                     }
+                    if call_id:
+                        if len(self._completed_call_results) > 500:
+                            self._completed_call_results.pop(next(iter(self._completed_call_results)))
+                        self._completed_call_results[call_id] = err_res
+                    return err_res
             finally:
                 if call_id:
                     self._active_call_ids.discard(call_id)

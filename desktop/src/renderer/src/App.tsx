@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
 interface Step {
   step_id: string
@@ -28,11 +28,13 @@ interface AgentState {
   takeover_active: boolean
   error_message: string | null
   computer_state?: {
-    active_window: ActiveWindow | null
-    screen_width: number
-    screen_height: number
-    cursor_x: number
-    cursor_y: number
+    active_window?: ActiveWindow | null
+    screen_width?: number
+    screen_height?: number
+    cursor_x?: number
+    cursor_y?: number
+    screenshot_dimensions?: { width: number; height: number }
+    scale_factors?: { scale_x: number; scale_y: number }
   } | null
 }
 
@@ -53,18 +55,23 @@ interface OfflineModelSpec {
   name: string;
   tag: string;
   specs: string;
-  isDefault: boolean;
+  isDefault?: boolean;
+  isInstalled?: boolean;
+  isVision?: boolean;
+  sizeGb?: number;
 }
 
-const offlineModelsList: OfflineModelSpec[] = [
-  { name: 'Qwen2.5-Coder 0.5B', tag: '0.5b', specs: 'Size: 0.4 GB • Req: 2GB RAM / Integrated GPU • 16k Context', isDefault: true },
-  { name: 'Qwen2.5-Coder 1.5B', tag: '1.5b', specs: 'Size: 1.0 GB • Req: 4GB RAM / 2GB VRAM • 16k Context', isDefault: true },
-  { name: 'Qwen2.5-Coder 3B', tag: '3b', specs: 'Size: 2.0 GB • Req: 6GB RAM / 4GB VRAM • 32k Context', isDefault: true },
-  { name: 'Qwen2.5-Coder 7B', tag: '7b', specs: 'Size: 4.7 GB • Req: 8GB VRAM / 16System RAM • 32k Context', isDefault: false },
-  { name: 'Qwen2.5-Coder 14B', tag: '14b', specs: 'Size: 9.0 GB • Req: 16GB VRAM / 32GB System RAM • 32k Context', isDefault: false },
-  { name: 'Qwen2.5-Coder 32B', tag: '32b', specs: 'Size: 20.0 GB • Req: 24GB+ VRAM / 64GB System RAM • 32k Context', isDefault: false },
+const offlineModelsCatalog: OfflineModelSpec[] = [
+  { name: 'Qwen2.5 7B', tag: 'qwen2.5:latest', specs: 'Size: 4.7 GB • Params: 7.6B • Tool Calling Supported', isDefault: false },
+  { name: 'Qwen2.5-Coder 0.5B', tag: 'qwen2.5-coder:0.5b', specs: 'Size: 0.4 GB • Req: 2GB RAM / Integrated GPU • 16k Context', isDefault: true },
+  { name: 'Qwen2.5-Coder 1.5B', tag: 'qwen2.5-coder:1.5b', specs: 'Size: 1.0 GB • Req: 4GB RAM / 2GB VRAM • 16k Context', isDefault: true },
+  { name: 'Qwen2.5-Coder 3B', tag: 'qwen2.5-coder:3b', specs: 'Size: 2.0 GB • Req: 6GB RAM / 4GB VRAM • 32k Context', isDefault: true },
+  { name: 'Qwen2.5-Coder 7B', tag: 'qwen2.5-coder:7b', specs: 'Size: 4.7 GB • Req: 8GB VRAM / 16System RAM • 32k Context', isDefault: false },
+  { name: 'Qwen2.5-Coder 14B', tag: 'qwen2.5-coder:14b', specs: 'Size: 9.0 GB • Req: 16GB VRAM / 32GB System RAM • 32k Context', isDefault: false },
+  { name: 'Qwen2.5-Coder 32B', tag: 'qwen2.5-coder:32b', specs: 'Size: 20.0 GB • Req: 24GB+ VRAM / 64GB System RAM • 32k Context', isDefault: false },
+  { name: 'Llama 3.2 Vision 11B', tag: 'llama3.2-vision:latest', specs: 'Size: 7.8 GB • Vision Capable • 131k Context', isDefault: false, isVision: true },
   { name: 'StarCoder2 15B', tag: 'starcoder2', specs: 'Size: 9.5 GB • Req: 16GB VRAM / 32GB System RAM • 16k Context', isDefault: false },
-  { name: 'DeepSeek-Coder-V2-Lite 16B', tag: 'deepseek', specs: 'Size: 8.9 GB • Req: 16GB VRAM / 32GB System RAM • 32k Context', isDefault: false }
+  { name: 'DeepSeek-Coder-V2-Lite 16B', tag: 'deepseek-coder-v2', specs: 'Size: 8.9 GB • Req: 16GB VRAM / 32GB System RAM • 32k Context', isDefault: false }
 ];
 
 function App(): React.JSX.Element {
@@ -91,24 +98,105 @@ function App(): React.JSX.Element {
   const animationFrameRef = useRef<number | null>(null)
 
   // Settings
-  const [selectedProvider, setSelectedProvider] = useState<'api' | 'local'>('api')
-  const [selectedModel, setSelectedModel] = useState('Gemini 3.5 Flash')
+  const [selectedProvider, setSelectedProvider] = useState<'api' | 'local'>(() => {
+    return (localStorage.getItem('spr_saathi_provider') as 'api' | 'local') || 'local'
+  })
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    return localStorage.getItem('spr_saathi_model') || 'qwen2.5:latest'
+  })
+
+  // Operating Mode State ('chat' = Conversational Chatbot, 'saathi' = Autonomous Computer Agent)
+  const [appMode, setAppMode] = useState<'chat' | 'saathi'>(() => {
+    return (localStorage.getItem('spr_saathi_mode') as 'chat' | 'saathi') || 'saathi'
+  })
+
+  // Chatbot Mode Message History & State
+  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: 'user' | 'assistant'; text: string; timestamp: string }>>(() => {
+    try {
+      const saved = localStorage.getItem('spr_saathi_chat_history')
+      if (saved) return JSON.parse(saved)
+    } catch (e) {}
+    return [
+      {
+        id: 'welcome',
+        sender: 'assistant',
+        text: "👋 Hello! I am **SPR SAATHI** in **Chatbot Mode** 💬.\n\nAsk me general questions, request explanations, brainstorm ideas, or generate code snippets. When you want me to autonomously perform tasks on your computer, switch to **SPR SAATHI Mode** 🤖 at the top!",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ]
+  })
+  const [chatLoading, setChatLoading] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('spr_saathi_chat_history', JSON.stringify(chatMessages.slice(-50)))
+    } catch (e) {}
+    if (appMode === 'chat') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [chatMessages, appMode])
 
   // Model Manager State
   const [managerTab, setManagerTab] = useState<'offline' | 'online'>('offline')
   const [installedOllamaModels, setInstalledOllamaModels] = useState<string[]>([])
+  const [installedOllamaDetails, setInstalledOllamaDetails] = useState<OfflineModelSpec[]>([])
   const [apiKeyVisible, setApiKeyVisible] = useState(false)
   const [cloudProvider, setCloudProvider] = useState<'gemini' | 'openai' | 'anthropic'>('gemini')
   const [cloudModel, setCloudModel] = useState('Gemini 3.5 Flash')
   const [cloudApiKey, setCloudApiKey] = useState('')
   const [managerMessage, setManagerMessage] = useState<{type: 'success' | 'error', text: string} | null>(null)
 
-  // Dynamic offline model classifications
-  const isInstalled = (model: OfflineModelSpec) => {
-    return installedOllamaModels.some(m => m.toLowerCase().includes(model.tag.toLowerCase()))
-  }
-  const installedList = offlineModelsList.filter(m => isInstalled(m))
-  const extendedList = offlineModelsList.filter(m => !isInstalled(m))
+  // Dynamic offline model classifications combining detected Ollama models + catalog
+  const installedList: OfflineModelSpec[] = useMemo(() => {
+    const list: OfflineModelSpec[] = []
+    const seenTags = new Set<string>()
+
+    // 1. Add all rich model details if available from API
+    for (const det of installedOllamaDetails) {
+      const tagKey = det.tag.toLowerCase()
+      if (!seenTags.has(tagKey)) {
+        seenTags.add(tagKey)
+        list.push(det)
+      }
+    }
+
+    // 2. Add EVERY raw model string returned by Ollama (e.g. qwen2.5:latest, llama3.2-vision:latest)
+    for (const rawName of installedOllamaModels) {
+      if (!rawName || rawName.toLowerCase().includes('embed')) continue
+      const tagKey = rawName.toLowerCase()
+      const alreadyPresent = Array.from(seenTags).some(t => t === tagKey || (t.startsWith(tagKey) && !t.includes('coder') && !tagKey.includes('coder')))
+      if (!alreadyPresent && !seenTags.has(tagKey)) {
+        seenTags.add(tagKey)
+        const catalogMatch = offlineModelsCatalog.find(
+          c => c.tag.toLowerCase() === tagKey || (c.tag.toLowerCase().startsWith(tagKey) && c.tag.toLowerCase().includes('coder') === tagKey.includes('coder'))
+        )
+        if (catalogMatch) {
+          list.push({ ...catalogMatch, tag: rawName, isInstalled: true })
+        } else {
+          const isVis = tagKey.includes('vision') || tagKey.includes('vl') || tagKey.includes('llava')
+          list.push({
+            name: rawName,
+            tag: rawName,
+            specs: isVis ? 'Vision Capable • Local Ollama Model' : 'Local Ollama Model • Tool Calling',
+            isDefault: false,
+            isInstalled: true,
+            isVision: isVis
+          })
+        }
+      }
+    }
+
+    return list
+  }, [installedOllamaDetails, installedOllamaModels])
+
+  const extendedList: OfflineModelSpec[] = useMemo(() => {
+    return offlineModelsCatalog.filter(cat => {
+      return !installedOllamaModels.some(
+        m => m.toLowerCase().includes(cat.tag.toLowerCase()) || cat.tag.toLowerCase().includes(m.toLowerCase())
+      )
+    })
+  }, [installedOllamaModels])
 
   const [configuredKeys, setConfiguredKeys] = useState<{openai: boolean, gemini: boolean, anthropic: boolean}>({
     openai: false,
@@ -271,6 +359,15 @@ function App(): React.JSX.Element {
         setBackendStatus('connected')
         setReconnectAttempts(0) // Reset attempts on success
         addFeedItem('success', 'Connected to Agent Runtime.', new Date().toISOString())
+        
+        // Sync saved model with backend
+        const savedProvider = (localStorage.getItem('spr_saathi_provider') as 'api' | 'local') || selectedProvider
+        const savedModel = localStorage.getItem('spr_saathi_model') || selectedModel
+        fetch(`http://127.0.0.1:${port}/api/config/model`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: savedProvider, model_name: savedModel })
+        }).catch(console.error)
       }
 
       ws.onmessage = (event) => {
@@ -706,6 +803,177 @@ function App(): React.JSX.Element {
     }
   }
 
+  // Chatbot Mode Messaging Handlers
+  const handleSendChatMessage = async (inputCommand?: string) => {
+    const command = inputCommand !== undefined ? inputCommand : taskInput
+    if (!command.trim() || port === null || chatLoading) return
+
+    const userMsg = {
+      id: `msg_${Date.now()}`,
+      sender: 'user' as const,
+      text: command,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+
+    setChatMessages(prev => [...prev, userMsg])
+    if (inputCommand === undefined) {
+      setTaskInput('')
+    }
+    setChatLoading(true)
+
+    try {
+      const historyPayload = chatMessages.slice(-10).map(m => ({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.text
+      }))
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: command,
+          history: historyPayload
+        })
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        const assistantMsg = {
+          id: `msg_ai_${Date.now()}`,
+          sender: 'assistant' as const,
+          text: data.response || "I have received your message.",
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }
+        setChatMessages(prev => [...prev, assistantMsg])
+      } else {
+        const data = await res.json().catch(() => ({}))
+        const errorMsg = {
+          id: `msg_err_${Date.now()}`,
+          sender: 'assistant' as const,
+          text: `⚠️ **Error**: ${data.detail || "Failed to generate AI response. Please verify model service."}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }
+        setChatMessages(prev => [...prev, errorMsg])
+      }
+    } catch (e: any) {
+      const errorMsg = {
+        id: `msg_err_${Date.now()}`,
+        sender: 'assistant' as const,
+        text: `⚠️ **Connection Error**: ${e.message || "Failed to connect to backend service."}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+      setChatMessages(prev => [...prev, errorMsg])
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const handleClearChat = async () => {
+    setChatMessages([
+      {
+        id: `welcome_${Date.now()}`,
+        sender: 'assistant',
+        text: "🧹 Conversation context cleared. How can I help you today?",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ])
+    if (port !== null) {
+      fetch(`http://127.0.0.1:${port}/api/chat/clear`, { method: 'POST' }).catch(() => {})
+    }
+  }
+
+  // Markdown rendering helpers for Chatbot conversation view
+  const renderInlineStyles = (raw: string) => {
+    const parts = raw.split(/(\*\*.*?\*\*|`.*?`)/g)
+    return parts.map((part, pIdx) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={pIdx}>{part.slice(2, -2)}</strong>
+      }
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return <code key={pIdx} className="chat-inline-code">{part.slice(1, -1)}</code>
+      }
+      return part
+    })
+  }
+
+  const renderTextWithFormatting = (text: string, keyPrefix: string) => {
+    const lines = text.split('\n')
+    return (
+      <div key={keyPrefix} className="chat-text-paragraph">
+        {lines.map((line, lIdx) => {
+          if (!line.trim()) {
+            return <div key={`${keyPrefix}_line_${lIdx}`} style={{ height: '6px' }} />
+          }
+          if (line.startsWith('### ')) {
+            return <h4 key={`${keyPrefix}_line_${lIdx}`} className="chat-heading-3">{line.replace('### ', '')}</h4>
+          }
+          if (line.startsWith('## ')) {
+            return <h3 key={`${keyPrefix}_line_${lIdx}`} className="chat-heading-2">{line.replace('## ', '')}</h3>
+          }
+          if (line.startsWith('# ')) {
+            return <h2 key={`${keyPrefix}_line_${lIdx}`} className="chat-heading-1">{line.replace('# ', '')}</h2>
+          }
+          if (line.startsWith('- ') || line.startsWith('* ')) {
+            return (
+              <div key={`${keyPrefix}_line_${lIdx}`} className="chat-bullet-item">
+                <span className="chat-bullet-dot">•</span>
+                <span>{renderInlineStyles(line.substring(2))}</span>
+              </div>
+            )
+          }
+          return (
+            <p key={`${keyPrefix}_line_${lIdx}`} className="chat-line">
+              {renderInlineStyles(line)}
+            </p>
+          )
+        })}
+      </div>
+    )
+  }
+
+  const renderFormattedMarkdown = (content: string) => {
+    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g
+    const parts: React.ReactNode[] = []
+    let lastIndex = 0
+    let match: RegExpExecArray | null
+
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      const precedingText = content.substring(lastIndex, match.index)
+      if (precedingText) {
+        parts.push(renderTextWithFormatting(precedingText, `txt_${lastIndex}`))
+      }
+      const lang = match[1] || 'code'
+      const code = match[2]
+      const codeKey = `code_${match.index}`
+      parts.push(
+        <div key={codeKey} className="chat-code-block">
+          <div className="chat-code-header">
+            <span className="chat-code-lang">{lang}</span>
+            <button
+              className="chat-code-copy-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(code)
+              }}
+              title="Copy code"
+            >
+              📋 Copy
+            </button>
+          </div>
+          <pre className="chat-code-pre">
+            <code>{code}</code>
+          </pre>
+        </div>
+      )
+      lastIndex = match.index + match[0].length
+    }
+
+    if (lastIndex < content.length) {
+      parts.push(renderTextWithFormatting(content.substring(lastIndex), `txt_${lastIndex}`))
+    }
+
+    return parts
+  }
+
   // API wrappers (Unified Task Submission)
   const triggerStartTask = async (inputCommand?: string) => {
     const command = inputCommand !== undefined ? inputCommand : taskInput
@@ -782,6 +1050,11 @@ function App(): React.JSX.Element {
   const handleModelChange = async (provider: 'api' | 'local', model: string, apiKey?: string) => {
     setSelectedProvider(provider)
     setSelectedModel(model)
+    try {
+      localStorage.setItem('spr_saathi_provider', provider)
+      localStorage.setItem('spr_saathi_model', model)
+    } catch (e) {}
+
     if (port === null) return
     try {
       const body: any = { provider, model_name: model }
@@ -819,8 +1092,24 @@ function App(): React.JSX.Element {
       const res = await fetch(`http://127.0.0.1:${port}/api/config/ollama_models`)
       if (res.ok) {
         const data = await res.json()
-        if (data.status === 'success' && Array.isArray(data.models)) {
-          setInstalledOllamaModels(data.models)
+        if (data.status === 'success') {
+          if (Array.isArray(data.models)) {
+            setInstalledOllamaModels(data.models)
+          }
+          if (Array.isArray(data.model_details)) {
+            const detected: OfflineModelSpec[] = data.model_details
+              .filter((m: any) => !m.is_embedding)
+              .map((m: any) => ({
+                name: m.name,
+                tag: m.tag || m.name,
+                specs: m.specs || `Size: ${m.size_gb} GB`,
+                isDefault: false,
+                isInstalled: true,
+                isVision: m.is_vision,
+                sizeGb: m.size_gb
+              }))
+            setInstalledOllamaDetails(detected)
+          }
         }
       }
     } catch (e) {
@@ -843,6 +1132,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     fetchConfiguredKeys()
+    fetchOllamaModels()
   }, [port])
 
   useEffect(() => {
@@ -902,6 +1192,27 @@ function App(): React.JSX.Element {
     }
   }
 
+  // Reload / Refresh Handler
+  const handleReload = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      if (backendStatus === 'disconnected' || backendStatus === 'unavailable') {
+        setReconnectAttempts((prev) => prev + 1)
+      }
+      await Promise.allSettled([
+        fetchOllamaModels(),
+        fetchConfiguredKeys(),
+        fetchAgentState(),
+        fetchInstalledApps()
+      ])
+    } catch (e) {
+      console.error('Reload error:', e)
+    } finally {
+      setTimeout(() => setRefreshing(false), 800)
+    }
+  }
+
   // Active status visualizer matching
   const status = agentState.status
 
@@ -910,92 +1221,59 @@ function App(): React.JSX.Element {
       {/* Header Section */}
       <header className="app-header">
         <div className="header-top">
-          <div className="logo-section">
-            <div className="logo-dot"></div>
+          <button
+            type="button"
+            className={`logo-section logo-btn ${refreshing ? 'refreshing' : ''}`}
+            onClick={handleReload}
+            title="Reload & Refresh Status"
+            aria-label="Reload and refresh SPR SAATHI"
+          >
             <h1 className="app-title">SPR SAATHI</h1>
+          </button>
+
+          {/* Top Mode Selector Slider */}
+          <div className="mode-toggle-slider-container">
+            <button
+              type="button"
+              className={`mode-toggle-btn ${appMode === 'chat' ? 'active chat' : ''}`}
+              onClick={() => {
+                setAppMode('chat')
+                localStorage.setItem('spr_saathi_mode', 'chat')
+              }}
+              title="Chatbot Mode: Conversational AI assistant"
+            >
+              <span className="mode-btn-label">Chatbot</span>
+            </button>
+            <button
+              type="button"
+              className={`mode-toggle-btn ${appMode === 'saathi' ? 'active saathi' : ''}`}
+              onClick={() => {
+                setAppMode('saathi')
+                localStorage.setItem('spr_saathi_mode', 'saathi')
+              }}
+              title="SPR SAATHI Mode: Autonomous Computer Agent"
+            >
+              <span className="mode-btn-label">SPR SAATHI</span>
+            </button>
           </div>
+
           {backendStatus === 'connected' ? (
-            <div className={`header-status connected ${status}`}>
-              <span className={`status-dot ${status}`}></span>
-              <span>{status.replace('_', ' ')}</span>
+            <div className={`header-status connected ${appMode === 'chat' ? 'chat-mode' : status}`}>
+              <span>{appMode === 'chat' ? (chatLoading ? 'Thinking...' : 'Chat Ready') : status.replace('_', ' ')}</span>
             </div>
           ) : backendStatus === 'connecting' ? (
             <div className="header-status connecting">
-              <span className="status-dot connecting"></span>
               <span>Connecting...</span>
             </div>
           ) : backendStatus === 'unavailable' ? (
             <div className="header-status unavailable">
-              <span className="status-dot unavailable"></span>
               <span>Backend unavailable</span>
             </div>
           ) : (
             <div className="header-status disconnected">
-              <span className="status-dot disconnected"></span>
               <span>Disconnected</span>
             </div>
           )}
-        </div>
-        <div className="header-actions">
-          <span 
-            className="model-badge" 
-            style={{ cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: '3px' }}
-            onClick={() => setActiveTab('settings')}
-            title="Manage Models"
-          >
-            AI: {selectedModel}
-          </span>
-          
-          <button
-            className="btn-refresh-status"
-            title="Refresh Status & Models"
-            onClick={async () => {
-              setRefreshing(true)
-              await fetchOllamaModels()
-              await fetchConfiguredKeys()
-              await fetchAgentState()
-              setTimeout(() => setRefreshing(false), 800)
-            }}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--color-text-secondary)',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '6px',
-              borderRadius: '50%',
-              transition: 'all 0.2s ease',
-              outline: 'none',
-              marginLeft: 'auto'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = '#ffffff'
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--color-text-secondary)'
-              e.currentTarget.style.background = 'transparent'
-            }}
-          >
-            <svg 
-              width="14" 
-              height="14" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke="currentColor" 
-              strokeWidth="2.5" 
-              strokeLinecap="round" 
-              strokeLinejoin="round" 
-              style={{ 
-                animation: refreshing ? 'spin 1s linear infinite' : 'none',
-                display: 'block'
-              }}
-            >
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
-            </svg>
-          </button>
         </div>
       </header>
 
@@ -1066,239 +1344,261 @@ function App(): React.JSX.Element {
       {/* Main Content Scroll Panel */}
       <main className="app-content">
         {activeTab === 'control' ? (
-          <>
-            {/* Dynamic Status Button at the top of Control Panel */}
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}>
-              <div 
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 20px',
-                  borderRadius: '20px',
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border-glass)',
-                  color: '#ffffff',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                  cursor: 'pointer',
-                  textTransform: 'uppercase',
-                  transition: 'background 0.2s ease, border-color 0.2s ease'
-                }}
-                onClick={() => setShowLoopActivity(!showLoopActivity)}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)'
-                  e.currentTarget.style.background = 'rgba(255,255,255,0.03)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--border-glass)'
-                  e.currentTarget.style.background = 'var(--bg-card)'
-                }}
-              >
-                {status === 'observing' ? (
-                  <>
-                    <span style={{ display: 'inline-block', animation: 'spin 2s linear infinite' }}>🔍</span>
-                    <span>Observing System</span>
-                  </>
-                ) : status === 'planning' ? (
-                  <>
-                    <span style={{ display: 'inline-block', animation: 'pulse 1s infinite' }}>📋</span>
-                    <span>Planning Action</span>
-                  </>
-                ) : status === 'checking_permission' ? (
-                  <>
-                    <span>🛡️</span>
-                    <span>Checking Permissions</span>
-                  </>
-                ) : status === 'acting' ? (
-                  <>
-                    <span style={{ display: 'inline-block', animation: 'pulse 0.5s infinite' }}>⚡</span>
-                    <span>Executing Action</span>
-                  </>
-                ) : status === 'verifying' ? (
-                  <>
-                    <span style={{ color: 'var(--color-success)' }}>✔</span>
-                    <span>Verifying Results</span>
-                  </>
-                ) : status === 'waiting_user' ? (
-                  <>
-                    <span style={{ display: 'inline-block', animation: 'pulse 1.2s infinite', color: 'var(--color-act)' }}>❓</span>
-                    <span>Waiting for User Response</span>
-                  </>
-                ) : status === 'completed' ? (
-                  <>
-                    <span style={{ color: '#10b981' }}>🎉</span>
-                    <span>Task Completed</span>
-                  </>
-                ) : status === 'failed' || status === 'error' ? (
-                  <>
-                    <span style={{ color: '#ef4444' }}>❌</span>
-                    <span>Task Failed</span>
-                  </>
-                ) : status === 'stopped' ? (
-                  <>
-                    <span style={{ color: '#f59e0b' }}>🛑</span>
-                    <span>Task Stopped</span>
-                  </>
-                ) : (
-                  <>
-                    <span style={{ color: '#10b981' }}>●</span>
-                    <span>Agent Idle</span>
-                  </>
-                )}
-                <span style={{ marginLeft: '4px', fontSize: '10px', color: 'var(--color-text-secondary)' }}>
-                  {showLoopActivity ? '▲' : '▼'}
-                </span>
+          appMode === 'chat' ? (
+            /* Chatbot Conversational Interface */
+            <div className="chatbot-view-container">
+              <div className="chatbot-header-bar">
+                <div className="chatbot-header-title">
+                  <span style={{ fontWeight: 500 }}>Conversation with {selectedModel}</span>
+                </div>
+                <button 
+                  className="chatbot-clear-btn"
+                  onClick={handleClearChat}
+                  title="Clear conversation history"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                  <span>Clear Chat</span>
+                </button>
               </div>
-            </div>
 
-            {/* Collapsible Loop Activity visualizer */}
-            {showLoopActivity && (
-              <section className="loop-visualizer" style={{ marginBottom: '16px', animation: 'slide-in 0.2s ease-out' }}>
-                <div className="section-title">Loop Activity</div>
-                <div className="loop-steps-grid">
-                  <div className={`loop-step-node ${status === 'observing' ? 'active' : ''}`}>
-                    <div className="node-icon observe">🔍</div>
-                    <span>OBSERVE</span>
-                  </div>
-                  <div className={`loop-step-node ${status === 'planning' ? 'active' : ''}`}>
-                    <div className="node-icon plan">📋</div>
-                    <span>PLAN</span>
-                  </div>
-                  <div className={`loop-step-node ${status === 'checking_permission' ? 'active' : ''}`}>
-                    <div className="node-icon check">🛡️</div>
-                    <span>CHECK</span>
-                  </div>
-                  <div className={`loop-step-node ${status === 'acting' ? 'active' : ''}`}>
-                    <div className="node-icon act">⚡</div>
-                    <span>ACT</span>
-                  </div>
-                  <div className={`loop-step-node ${status === 'verifying' ? 'active' : ''}`}>
-                    <div className="node-icon verify">✔</div>
-                    <span>VERIFY</span>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {/* Computer State Card */}
-            {agentState.computer_state && (
-              <div 
-                style={{ 
-                  background: 'var(--bg-card)', 
-                  border: '1px solid var(--border-glass)', 
-                  borderRadius: '12px', 
-                  padding: '12px', 
-                  fontSize: '12px', 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: '6px',
-                  animation: 'slide-in 0.2s ease-out'
-                }}
-              >
-                <div className="section-title">Computer State</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--color-text-secondary)' }}>Screen:</span>
-                  <span style={{ fontWeight: 600 }}>{agentState.computer_state.screen_width} × {agentState.computer_state.screen_height}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--color-text-secondary)' }}>Cursor:</span>
-                  <span style={{ fontWeight: 600, color: 'var(--color-act)' }}>{agentState.computer_state.cursor_x}, {agentState.computer_state.cursor_y}</span>
-                </div>
-                {agentState.computer_state.active_window && (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--color-text-secondary)' }}>Active Window:</span>
-                      <span style={{ fontWeight: 600, maxWidth: '180px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={agentState.computer_state.active_window.title}>
-                        {agentState.computer_state.active_window.title}
-                      </span>
+              <div className="chat-messages-scroll">
+                {chatMessages.map(msg => (
+                  <div key={msg.id} className={`chat-message-row ${msg.sender}`}>
+                    <div className="chat-avatar">
+                      {msg.sender === 'user' ? '👤' : '✨'}
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--color-text-secondary)' }}>Process:</span>
-                      <span style={{ fontFamily: 'monospace' }}>{agentState.computer_state.active_window.process}</span>
+                    <div className="chat-bubble-content">
+                      <div className="chat-bubble-header">
+                        <span className="chat-sender-name">{msg.sender === 'user' ? 'You' : 'SPR SAATHI'}</span>
+                        <span className="chat-timestamp">{msg.timestamp}</span>
+                      </div>
+                      <div className="chat-bubble-text">
+                        {renderFormattedMarkdown(msg.text)}
+                      </div>
                     </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Dynamic Action Steps Checklist */}
-            {agentState.steps.length > 0 && (
-              <section className="steps-checklist">
-                <div className="section-title">Execution Steps</div>
-                {agentState.steps.map((step) => (
-                  <div 
-                    key={step.step_id} 
-                    className={`step-item ${step.status} ${agentState.active_step_id === step.step_id ? 'running' : ''}`}
-                  >
-                    <div className="step-indicator"></div>
-                    <div className="step-desc" title={step.description}>{step.description}</div>
                   </div>
                 ))}
-              </section>
-            )}
-
-            {/* Permission Authorization Card */}
-            {activePrompt && (
-              <section className="permission-overlay">
-                <div className="section-title" style={{ color: 'var(--color-takeover)' }}>Security Check Required</div>
-                <div className="prompt-text">
-                  Agent is requesting to use <strong>{activePrompt.tool_name}</strong>:
-                </div>
-                <div className="prompt-args">
-                  {JSON.stringify(activePrompt.arguments, null, 2)}
-                </div>
-                <div className="prompt-actions">
-                  <button className="btn btn-primary" onClick={() => respondPermission('allow')}>
-                    Allow Action
-                  </button>
-                  <button className="btn btn-danger" onClick={() => respondPermission('deny')}>
-                    Block Action
-                  </button>
-                </div>
-              </section>
-            )}
-
-            {/* Clarification Prompt Overlay */}
-            {status === 'waiting_user' && (
-              <section className="permission-overlay" style={{ borderColor: 'var(--color-act)' }}>
-                <div className="section-title" style={{ color: 'var(--color-act)' }}>Clarification Required</div>
-                <div className="prompt-text" style={{ marginBottom: '10px' }}>
-                  <strong>The Agent asks:</strong>
-                  <div style={{ marginTop: '6px', padding: '10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
-                    {userQuestion || "I need clarification to proceed. Please respond below."}
+                {chatLoading && (
+                  <div className="chat-message-row assistant">
+                    <div className="chat-avatar">✨</div>
+                    <div className="chat-bubble-content">
+                      <div className="chat-typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                      </div>
+                    </div>
                   </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+            </div>
+          ) : (
+            /* SPR SAATHI Autonomous Agent Control Interface */
+            <>
+              {/* Dynamic Status Button at the top of Control Panel */}
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '12px' }}>
+                <div 
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border-glass)',
+                    color: '#e4e4e7',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    transition: 'background 0.15s ease, border-color 0.15s ease'
+                  }}
+                  onClick={() => setShowLoopActivity(!showLoopActivity)}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)'
+                    e.currentTarget.style.background = '#1a1a20'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--border-glass)'
+                    e.currentTarget.style.background = 'var(--bg-card)'
+                  }}
+                >
+                  {status === 'observing' ? (
+                    <span>Observing</span>
+                  ) : status === 'planning' ? (
+                    <span>Planning</span>
+                  ) : status === 'checking_permission' ? (
+                    <span>Checking Permissions</span>
+                  ) : status === 'acting' ? (
+                    <span>Executing</span>
+                  ) : status === 'verifying' ? (
+                    <span>Verifying</span>
+                  ) : status === 'waiting_user' ? (
+                    <span>Waiting for User</span>
+                  ) : status === 'completed' ? (
+                    <span>Task Completed</span>
+                  ) : status === 'failed' || status === 'error' ? (
+                    <span>Task Failed</span>
+                  ) : status === 'stopped' ? (
+                    <span>Task Stopped</span>
+                  ) : (
+                    <span>Agent Idle</span>
+                  )}
+                  <span style={{ marginLeft: '4px', fontSize: '9px', color: 'var(--color-text-muted)' }}>
+                    {showLoopActivity ? '▲' : '▼'}
+                  </span>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                  <input 
-                    id="userClarificationResponse"
-                    placeholder="Type your response here..."
-                    style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)', background: 'var(--bg-card)', color: 'var(--color-text)', outline: 'none' }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        respondUserQuestion(e.currentTarget.value)
-                        e.currentTarget.value = ''
-                      }
-                    }}
-                  />
-                  <button 
-                    className="btn btn-primary"
-                    onClick={() => {
-                      const input = document.getElementById('userClarificationResponse') as HTMLInputElement
-                      if (input) {
-                        respondUserQuestion(input.value)
-                        input.value = ''
-                      }
-                    }}
-                  >
-                    Send
-                  </button>
-                </div>
-              </section>
-            )}
+              </div>
 
-          </>
+              {/* Collapsible Loop Activity visualizer */}
+              {showLoopActivity && (
+                <section className="loop-visualizer" style={{ marginBottom: '16px', animation: 'slide-in 0.2s ease-out' }}>
+                  <div className="section-title">Loop Activity</div>
+                  <div className="loop-steps-grid">
+                    <div className={`loop-step-node ${status === 'observing' ? 'active' : ''}`}>
+                      <div className="node-icon observe">🔍</div>
+                      <span>OBSERVE</span>
+                    </div>
+                    <div className={`loop-step-node ${status === 'planning' ? 'active' : ''}`}>
+                      <div className="node-icon plan">📋</div>
+                      <span>PLAN</span>
+                    </div>
+                    <div className={`loop-step-node ${status === 'checking_permission' ? 'active' : ''}`}>
+                      <div className="node-icon check">🛡️</div>
+                      <span>CHECK</span>
+                    </div>
+                    <div className={`loop-step-node ${status === 'acting' ? 'active' : ''}`}>
+                      <div className="node-icon act">⚡</div>
+                      <span>ACT</span>
+                    </div>
+                    <div className={`loop-step-node ${status === 'verifying' ? 'active' : ''}`}>
+                      <div className="node-icon verify">✔</div>
+                      <span>VERIFY</span>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {/* Computer State Card */}
+              {agentState.computer_state && (
+                <div 
+                  style={{ 
+                    background: 'var(--bg-card)', 
+                    border: '1px solid var(--border-glass)', 
+                    borderRadius: '12px', 
+                    padding: '12px', 
+                    fontSize: '12px', 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '6px',
+                    animation: 'slide-in 0.2s ease-out'
+                  }}
+                >
+                  <div className="section-title">Computer State</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--color-text-secondary)' }}>Screen:</span>
+                    <span style={{ fontWeight: 600 }}>{agentState.computer_state.screen_width} × {agentState.computer_state.screen_height}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--color-text-secondary)' }}>Cursor:</span>
+                    <span style={{ fontWeight: 600, color: 'var(--color-act)' }}>{agentState.computer_state.cursor_x}, {agentState.computer_state.cursor_y}</span>
+                  </div>
+                  {agentState.computer_state.active_window && (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>Active Window:</span>
+                        <span style={{ fontWeight: 600, maxWidth: '180px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={agentState.computer_state.active_window.title}>
+                          {agentState.computer_state.active_window.title}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>Process:</span>
+                        <span style={{ fontFamily: 'monospace' }}>{agentState.computer_state.active_window.process}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Dynamic Action Steps Checklist */}
+              {agentState.steps.length > 0 && (
+                <section className="steps-checklist">
+                  <div className="section-title">Execution Steps</div>
+                  {agentState.steps.map((step) => (
+                    <div 
+                      key={step.step_id} 
+                      className={`step-item ${step.status} ${agentState.active_step_id === step.step_id ? 'running' : ''}`}
+                    >
+                      <div className="step-indicator"></div>
+                      <div className="step-desc" title={step.description}>{step.description}</div>
+                    </div>
+                  ))}
+                </section>
+              )}
+
+              {/* Permission Authorization Card */}
+              {activePrompt && (
+                <section className="permission-overlay">
+                  <div className="section-title" style={{ color: 'var(--color-takeover)' }}>Security Check Required</div>
+                  <div className="prompt-text">
+                    Agent is requesting to use <strong>{activePrompt.tool_name}</strong>:
+                  </div>
+                  <div className="prompt-args">
+                    {JSON.stringify(activePrompt.arguments, null, 2)}
+                  </div>
+                  <div className="prompt-actions">
+                    <button className="btn btn-primary" onClick={() => respondPermission('allow')}>
+                      Allow Action
+                    </button>
+                    <button className="btn btn-danger" onClick={() => respondPermission('deny')}>
+                      Block Action
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {/* Clarification Prompt Overlay */}
+              {status === 'waiting_user' && (
+                <section className="permission-overlay" style={{ borderColor: 'var(--color-act)' }}>
+                  <div className="section-title" style={{ color: 'var(--color-act)' }}>Clarification Required</div>
+                  <div className="prompt-text" style={{ marginBottom: '10px' }}>
+                    <strong>The Agent asks:</strong>
+                    <div style={{ marginTop: '6px', padding: '10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
+                      {userQuestion || "I need clarification to proceed. Please respond below."}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                    <input 
+                      id="userClarificationResponse"
+                      placeholder="Type your response here..."
+                      style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)', background: 'var(--bg-card)', color: 'var(--color-text)', outline: 'none' }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          respondUserQuestion(e.currentTarget.value)
+                          e.currentTarget.value = ''
+                        }
+                      }}
+                    />
+                    <button 
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const input = document.getElementById('userClarificationResponse') as HTMLInputElement
+                        if (input) {
+                          respondUserQuestion(input.value)
+                          input.value = ''
+                        }
+                      }}
+                    >
+                      Send
+                    </button>
+                  </div>
+                </section>
+              )}
+            </>
+          )
         ) : activeTab === 'security' ? (
           <>
             {/* Security & Applications Access Control Panel */}
@@ -1616,6 +1916,11 @@ function App(): React.JSX.Element {
                         <div className="model-item-info">
                           <div className="model-item-title-row">
                             <span className="model-item-title">{model.name}</span>
+                            {model.isVision && (
+                              <span className="model-item-badge" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                                👁️ Vision
+                              </span>
+                            )}
                             <span className="model-item-badge installed">Installed</span>
                           </div>
                           <div className="model-item-specs">{model.specs}</div>
@@ -1880,13 +2185,21 @@ function App(): React.JSX.Element {
         <div className="input-container-premium">
           <textarea
             className="chat-textarea"
-            placeholder="Ask anything, @ to mention, / for actions"
+            placeholder={
+              appMode === 'chat'
+                ? "Ask anything, discuss ideas, or request code..."
+                : "Describe a task to perform on your computer..."
+            }
             value={taskInput}
             onChange={(e) => setTaskInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                triggerStartTask()
+                if (appMode === 'chat') {
+                  handleSendChatMessage()
+                } else {
+                  triggerStartTask()
+                }
               }
             }}
             rows={1}
@@ -1926,14 +2239,18 @@ function App(): React.JSX.Element {
                     <option value="api:Claude 3.5 Haiku">Claude 3.5 Haiku</option>
                   )}
                   
-                  {/* Local/Offline Models (only if installed or active) */}
-                  {offlineModelsList
-                    .filter(model => isInstalled(model) || (selectedProvider === 'local' && selectedModel === model.name))
-                    .map(model => (
-                      <option key={model.name} value={`local:${model.name}`}>
-                        {model.name} (Installed)
-                      </option>
-                    ))}
+                  {/* Local/Offline Models (ALL installed models detected on system) */}
+                  {installedList.map(model => (
+                    <option key={model.name} value={`local:${model.name}`}>
+                      {model.name} {model.isVision ? '👁️ (Vision)' : '(Local)'}
+                    </option>
+                  ))}
+                  {/* If active local model is not in list, keep it visible */}
+                  {selectedProvider === 'local' && !installedList.some(m => m.name.toLowerCase() === selectedModel.toLowerCase()) && (
+                    <option value={`local:${selectedModel}`}>
+                      {selectedModel} (Active)
+                    </option>
+                  )}
                 </select>
                 <span className="dropdown-chevron">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -1967,9 +2284,19 @@ function App(): React.JSX.Element {
               
               <button 
                 className="btn-send-premium"
-                title="Send command"
-                onClick={() => triggerStartTask()}
-                disabled={(status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped') || !taskInput.trim()}
+                title={appMode === 'chat' ? "Send message" : "Send command"}
+                onClick={() => {
+                  if (appMode === 'chat') {
+                    handleSendChatMessage()
+                  } else {
+                    triggerStartTask()
+                  }
+                }}
+                disabled={
+                  appMode === 'chat'
+                    ? (chatLoading || !taskInput.trim())
+                    : ((status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped') || !taskInput.trim())
+                }
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="5" y1="12" x2="19" y2="12"></line>

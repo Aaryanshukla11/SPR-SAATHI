@@ -13,6 +13,10 @@ def validate_action(action_name: str, arguments: Dict[str, Any]) -> Tuple[bool, 
         "mouse_down",
         "mouse_up",
         "mouse_drag",
+        "draw_line",
+        "draw_polyline",
+        "draw_rectangle",
+        "draw_shape",
         "keyboard_type",
         "keyboard_press",
         "keyboard_hotkey"
@@ -70,13 +74,18 @@ def validate_action(action_name: str, arguments: Dict[str, Any]) -> Tuple[bool, 
         start_y = arguments.get("start_y")
         end_x = arguments.get("end_x")
         end_y = arguments.get("end_y")
-        duration = arguments.get("duration_ms", 200)
+        duration = arguments.get("duration_ms", 250)
         button = arguments.get("button", "left")
         
         err = validate_coords(start_x, start_y, "start_x", "start_y")
         if err: return False, err
         err = validate_coords(end_x, end_y, "end_x", "end_y")
         if err: return False, err
+        
+        if not has_target:
+            # Prevent dragging near the very top of the monitor where Windows Snap Assist / Window tiling triggers
+            if start_y <= 5 or end_y <= 5:
+                return False, "Drag coordinates touch the top screen edge (y <= 5) which triggers Windows Snap Assist."
         
         if str(button).lower().strip() not in ["left", "right", "middle"]:
             return False, f"Unsupported mouse button: '{button}'. Must be 'left', 'right', or 'middle'."

@@ -138,6 +138,11 @@ class BaseModelProvider(ABC):
             "context_window": 128000
         }
 
+    @property
+    def supports_vision(self) -> bool:
+        """Returns True if this model provider instance supports image/multimodal input."""
+        return bool(self.capabilities.get("supports_vision", False))
+
     @abstractmethod
     async def generate(self, prompt: str, system_instruction: Optional[str] = None) -> ModelResponse:
         """Generates text from a prompt."""
@@ -154,7 +159,8 @@ class BaseModelProvider(ABC):
         goal: str, 
         plan: List[Dict[str, Any]], 
         observation: Dict[str, Any], 
-        recent_history: List[Dict[str, Any]]
+        recent_history: List[Dict[str, Any]],
+        image_base64: Optional[str] = None
     ) -> Dict[str, Any]:
         """Returns a structured next action decision."""
         pass

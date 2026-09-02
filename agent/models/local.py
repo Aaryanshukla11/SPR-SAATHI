@@ -7,38 +7,52 @@ from .base import BaseModelProvider, ModelResponse
 
 class LocalModelProvider(BaseModelProvider):
     def _get_ollama_model(self) -> str:
-        name = self.model_name.lower().strip()
-        target_tag = "qwen2.5-coder:latest"
+        raw_name = (self.model_name or "").strip()
+        lower_name = raw_name.lower()
         
-        if "0.5b" in name:
-            target_tag = "qwen2.5-coder:0.5b"
-        elif "1.5b" in name:
-            target_tag = "qwen2.5-coder:1.5b"
-        elif "3b" in name:
-            target_tag = "qwen2.5-coder:3b"
-        elif "7b" in name:
-            target_tag = "qwen2.5-coder:7b"
-        elif "14b" in name:
-            target_tag = "qwen2.5-coder:14b"
-        elif "32b" in name:
-            target_tag = "qwen2.5-coder:32b"
-        elif "vision" in name or "llama3.2" in name:
-            target_tag = "llama3.2-vision:latest"
-            
-        # Fetch tags from Ollama to match case-insensitively
+        # 1. Fetch tags directly from Ollama
+        installed_models: List[str] = []
         try:
             with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2.0) as response:
                 data = json.loads(response.read().decode())
-                for m in data.get("models", []):
-                    m_name = m.get("name", "")
-                    if m_name.lower() == target_tag.lower():
-                        return m_name
-                    if m_name.lower().startswith(target_tag.lower()):
-                        return m_name
+                installed_models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
         except Exception:
             pass
             
-        return target_tag
+        if not installed_models:
+            return raw_name or "qwen2.5:latest"
+
+        # 2. Check exact case-insensitive match (e.g. "llama3.2-vision:latest", "qwen2.5:latest")
+        for m in installed_models:
+            if m.lower() == lower_name:
+                return m
+
+        # 3. Check base name match without tag (e.g. "llama3.2-vision" -> "llama3.2-vision:latest")
+        for m in installed_models:
+            m_base = m.split(":")[0].lower()
+            if m_base == lower_name or lower_name.startswith(m_base) or m_base.startswith(lower_name):
+                return m
+
+        # 4. Check parameter size / substring match (e.g. "14B" -> "qwen2.5-coder:14B", "7B" -> "qwen2.5-coder:7b")
+        for m in installed_models:
+            m_low = m.lower()
+            if "embed" in m_low:
+                continue # skip embedding models for chat
+            if lower_name in m_low:
+                return m
+            # Parameter size hints
+            for size_hint in ["32b", "14b", "7b", "3b", "1.5b", "0.5b", "8b", "1b", "70b"]:
+                if size_hint in lower_name and size_hint in m_low:
+                    return m
+            if "vision" in lower_name and ("vision" in m_low or "vl" in m_low or "llava" in m_low):
+                return m
+
+        # 5. Default fallback to first non-embedding installed model or raw name
+        for m in installed_models:
+            if "embed" not in m.lower():
+                return m
+
+        return raw_name or installed_models[0]
 
     async def generate(self, prompt: str, system_instruction: Optional[str] = None) -> ModelResponse:
         ollama_model = self._get_ollama_model()
@@ -100,12 +114,25 @@ class LocalModelProvider(BaseModelProvider):
         except Exception as e:
             raise RuntimeError(f"MODEL_UNAVAILABLE: Ollama generate_with_tools failed. Details: {str(e)}")
 
+    @property
+    def capabilities(self) -> Dict[str, Any]:
+        ollama_model = self._get_ollama_model().lower()
+        has_vision = any(x in ollama_model for x in ["vision", "llava", "minicpm", "bakllava", "moondream", "qwen-vl", "vl"])
+        return {
+            "supports_tool_calling": True,
+            "supports_structured_output": True,
+            "supports_vision": has_vision,
+            "supports_streaming": False,
+            "context_window": 128000
+        }
+
     async def decide_action(
         self, 
         goal: str, 
         plan: List[Dict[str, Any]], 
         observation: Dict[str, Any], 
-        recent_history: List[Dict[str, Any]]
+        recent_history: List[Dict[str, Any]],
+        image_base64: Optional[str] = None
     ) -> Dict[str, Any]:
         ollama_model = self._get_ollama_model()
         url = "http://127.0.0.1:11434/api/chat"
@@ -118,9 +145,16 @@ class LocalModelProvider(BaseModelProvider):
             recent_history=recent_history
         )
 
+        img_b64 = image_base64 if image_base64 is not None else observation.get("image_base64")
+
+        # Multimodal image attachment for vision-capable models
+        user_message: Dict[str, Any] = {"role": "user", "content": user_content}
+        if self.supports_vision and img_b64:
+            user_message["images"] = [img_b64]
+
         messages = [
             {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_content}
+            user_message
         ]
 
         try:

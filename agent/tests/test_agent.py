@@ -417,9 +417,10 @@ async def test_architectural_providers_no_emulation():
         assert "API_CREDENTIALS_MISSING" in str(exc_info.value) or "API local service call failed" in str(exc_info.value)
         
     # LocalModelProvider when Ollama is down should raise exception rather than return a fake decision
-    with pytest.raises(RuntimeError) as exc_info:
-        await local_model.decide_action("Draw a house in Paint", [], obs, [])
-    assert "MODEL_UNAVAILABLE" in str(exc_info.value)
+    with patch("httpx.AsyncClient.get", side_effect=Exception("Connection refused")):
+        with pytest.raises(RuntimeError) as exc_info:
+            await local_model.decide_action("Draw a house in Paint", [], obs, [])
+        assert "MODEL_UNAVAILABLE" in str(exc_info.value)
 
 @pytest.mark.asyncio
 async def test_architectural_local_unavailable_ollama():

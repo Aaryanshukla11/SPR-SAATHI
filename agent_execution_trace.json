@@ -1,6 +1,6 @@
 {
-  "task_goal": "Open Paint and draw a cube",
+  "task_goal": "Text-only fallback task",
   "total_steps": 0,
-  "duration_seconds": 2.82,
+  "duration_seconds": 0.95,
   "steps": []
 }

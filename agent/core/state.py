@@ -50,9 +50,19 @@ class StateTracker:
         self.computer_state = computer_state
         self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
 
-    def add_action_history(self, action_name: str, parameters: Dict[str, Any], status: str, error_message: Optional[str] = None, duration_ms: int = 0, output: Optional[str] = None):
+    def add_action_history(
+        self, 
+        action_name: str, 
+        parameters: Dict[str, Any], 
+        status: str, 
+        error_message: Optional[str] = None, 
+        duration_ms: int = 0, 
+        output: Optional[str] = None,
+        obs_before: Optional[Dict[str, Any]] = None,
+        obs_after: Optional[Dict[str, Any]] = None
+    ):
         clean_params = parameters.copy()
-        history_item = {
+        history_item: Dict[str, Any] = {
             "action": action_name,
             "parameters": clean_params,
             "status": status,
@@ -63,6 +73,20 @@ class StateTracker:
             history_item["error"] = error_message
         if output:
             history_item["output"] = output
+
+        # Attach lightweight observation metadata (omitting raw base64 string to keep memory bounded)
+        if obs_before:
+            history_item["observation_before"] = {
+                "active_window": obs_before.get("active_window"),
+                "image_available": obs_before.get("image_available", False),
+                "image_path": obs_before.get("image_path")
+            }
+        if obs_after:
+            history_item["observation_after"] = {
+                "active_window": obs_after.get("active_window"),
+                "image_available": obs_after.get("image_available", False),
+                "image_path": obs_after.get("image_path")
+            }
             
         self.action_history.append(history_item)
         if len(self.action_history) > 50:

@@ -7,6 +7,7 @@ from .planner import BasePlanner
 from .executor import ToolExecutor
 from agent.control.takeover import TakeoverManager
 from agent.core import win32_utils
+from agent.core.vision import SCREEN_OBSERVER
 from agent.models.base import validate_model_decision
 from agent.core.trace import ExecutionTracer
 
@@ -125,18 +126,8 @@ class AgentLoop:
         self.state_tracker.update_status("resuming")
         await self._emit_event("task.resuming", "Transitioning back to AI control. Re-observing desktop state...")
         
-        # 1. State Re-observation
-        active_window = win32_utils.get_active_window_details()
-        visible_windows = win32_utils.list_desktop_windows()
-        screen_w, screen_h = win32_utils.get_screen_size()
-        cursor_x, cursor_y = win32_utils.get_cursor_position()
-        
-        obs = {
-            "active_window": active_window,
-            "visible_windows": visible_windows,
-            "screen": {"width": screen_w, "height": screen_h},
-            "cursor": {"x": cursor_x, "y": cursor_y}
-        }
+        # 1. State Re-observation via ScreenObserver
+        obs = SCREEN_OBSERVER.capture_observation(task_id=self.state_tracker.task_id)
         self.state_tracker.update_computer_state(obs)
         await self._emit_event("control.reobservation_completed", "Re-observation completed.", obs)
         
@@ -242,30 +233,23 @@ class AgentLoop:
                     self.state_tracker.update_status("cancelled")
                     return
 
-                # 3. OBSERVE (Requirement 7 & 8)
+                # 3. OBSERVE BEFORE ACTION (Visual & Structural Observation)
                 self.state_tracker.update_status("running")
-                active_window = win32_utils.get_active_window_details()
-                visible_windows = win32_utils.list_desktop_windows()
-                screen_w, screen_h = win32_utils.get_screen_size()
-                cursor_x, cursor_y = win32_utils.get_cursor_position()
+                obs_before = SCREEN_OBSERVER.capture_observation(task_id=self.state_tracker.task_id)
+                self.state_tracker.update_computer_state(obs_before)
                 
-                obs = {
-                    "active_window": active_window,
-                    "visible_windows": visible_windows,
-                    "screen": {"width": screen_w, "height": screen_h},
-                    "cursor": {"x": cursor_x, "y": cursor_y}
-                }
-                self.state_tracker.update_computer_state(obs)
-                
+                active_window = obs_before.get("active_window")
                 obs_message = f"Active window: '{active_window.get('title') if active_window else 'Desktop'}'"
-                await self._emit_event("task.observation", f"Observed state: {obs_message}", obs)
+                if obs_before.get("image_available"):
+                    obs_message += " [Visual Screen Captured]"
+                await self._emit_event("task.observation", f"Observed state: {obs_message}", obs_before)
 
                 if self.tracer:
-                    self.tracer.start_step(self.state_tracker.attempt_count + 1, obs, obs_message)
+                    self.tracer.start_step(self.state_tracker.attempt_count + 1, obs_before, obs_message)
 
-                # 4. SELECT NEXT ACTION / DECISION (Requirement 11 & 12)
+                # 4. SELECT NEXT ACTION / DECISION (Multimodal Visual Reasoning)
                 model = self.planner.model_provider
-                await self._emit_event("status_change", "Thinking...")
+                await self._emit_event("status_change", "Thinking with visual context...")
                 
                 from agent.core.schema import get_tools_schema
                 try:
@@ -275,13 +259,16 @@ class AgentLoop:
                 print(f"[DEVELOPMENT LOG] === MODEL_REQUEST ===")
                 print(f"  Provider: {model.__class__.__name__}")
                 print(f"  Model: {model.model_name}")
+                print(f"  Supports Vision: {getattr(model, 'supports_vision', False)}")
+                print(f"  Visual Image Attached: {bool(obs_before.get('image_base64'))}")
                 print(f"  Number of Tools: {num_tools}")
                 
                 decision = await model.decide_action(
                     goal=task,
                     plan=self.state_tracker.steps,
-                    observation=obs,
-                    recent_history=self.state_tracker.action_history
+                    observation=obs_before,
+                    recent_history=self.state_tracker.action_history,
+                    image_base64=obs_before.get("image_base64")
                 )
                 
                 # Generic model decision tracing (observational only)
@@ -421,33 +408,33 @@ class AgentLoop:
                     print(f"  Output: {result.get('output')}")
                     print(f"  Error: {result.get('error')}")
 
+                    # 4. OBSERVE AFTER ACTION (Let UI settle & capture updated visual state)
+                    self.state_tracker.update_status("verifying")
+                    await asyncio.sleep(0.35)
+                    
+                    obs_after = SCREEN_OBSERVER.capture_observation(task_id=self.state_tracker.task_id)
+                    self.state_tracker.update_computer_state(obs_after)
+
                     self.state_tracker.add_action_history(
                         tool_name, 
                         args, 
                         "completed" if result["success"] else "failed", 
                         result.get("error"), 
                         duration_ms,
-                        output=result.get("output")
+                        output=result.get("output"),
+                        obs_before=obs_before,
+                        obs_after=obs_after
                     )
 
-                    # 4. Verify & Re-observe (Requirement 13)
-                    self.state_tracker.update_status("verifying")
-                    
-                    # re-observe current active window process details
-                    active_window = win32_utils.get_active_window_details()
-                    visible_windows = win32_utils.list_desktop_windows()
-                    screen_w, screen_h = win32_utils.get_screen_size()
-                    cursor_x, cursor_y = win32_utils.get_cursor_position()
-                    
-                    obs = {
-                        "active_window": active_window,
-                        "visible_windows": visible_windows,
-                        "screen": {"width": screen_w, "height": screen_h},
-                        "cursor": {"x": cursor_x, "y": cursor_y}
-                    }
-                    self.state_tracker.update_computer_state(obs)
+                    after_win = obs_after.get("active_window")
+                    after_win_title = after_win.get("title", "Desktop") if after_win else "Desktop"
+                    await self._emit_event(
+                        "task.observation_after", 
+                        f"Observation after {tool_name}: Active window '{after_win_title}'", 
+                        obs_after
+                    )
 
-                    # Deterministic validation for launch/focus (Requirement 13)
+                    # Deterministic validation for launch/focus/mouse verification
                     if result["success"]:
                         if tool_name == "launch_app":
                             target_name = args.get("app_name", "").lower()
@@ -487,6 +474,13 @@ class AgentLoop:
                                 result["success"] = False
                                 result["error"] = "Verification failed: Target window was not focused."
 
+                        elif tool_name in ("mouse_drag", "draw_line", "draw_polyline", "draw_rectangle", "draw_shape"):
+                            # Distinguish ACTION_SUCCESS (OS input injected) from RESULT_SUCCESS (pixels visually modified)
+                            if result.get("result_success") is False or result.get("verification_status") == "verification_failed":
+                                result["success"] = False
+                                if not result.get("error"):
+                                    result["error"] = "Visual verification failed: No visible change detected on the target canvas."
+
                     # Verify outcome
                     if result["success"]:
                         await self._emit_event("tool.completed", f"Action completed: {tool_name}", {"duration_ms": duration_ms})
@@ -498,11 +492,16 @@ class AgentLoop:
                         if active_step_id:
                             self.state_tracker.fail_step(active_step_id)
                             
-                        # Increment step retry attempt counts (Requirement 14)
+                        # Increment step retry attempt counts
                         step_id = active_step_id or "generic"
                         step_attempts[step_id] = step_attempts.get(step_id, 0) + 1
                         if step_attempts[step_id] >= self.max_retries_per_step:
-                            raise RuntimeError(f"Step '{step_id}' failed consecutively {self.max_retries_per_step} times. Aborting task.")
+                            logger.warning(f"Step '{step_id}' reached max attempts ({self.max_retries_per_step}). Forcing replan.")
+                            await self._emit_event("task.step_limit_reached", f"Step '{step_id}' reached retry limit ({self.max_retries_per_step}). Replanning.")
+                            step_attempts[step_id] = 0 # reset attempts for new attempt phase
+                            consecutive_replans += 1
+                            if consecutive_replans > self.max_replans:
+                                raise RuntimeError(f"Step '{step_id}' failed consecutively {self.max_retries_per_step} times. Aborting task.")
 
                     # Increment total attempts count
                     self.state_tracker.attempt_count += 1
@@ -525,6 +524,11 @@ class AgentLoop:
             win32_utils.release_all_buttons()
             await self._emit_event("task.failed", f"Autonomous task failed: {str(e)}", {"error": str(e)})
         finally:
+            # Clean up temporary screenshots if task is finished or cancelled
+            try:
+                SCREEN_OBSERVER.lifecycle_manager.cleanup_task_screenshots(self.state_tracker.task_id)
+            except Exception:
+                pass
             if self.tracer:
                 try:
                     self.tracer.save_trace("agent_execution_trace.json")

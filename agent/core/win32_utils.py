@@ -2,7 +2,11 @@ import ctypes
 import time
 import sys
 import threading
+import math
+import logging
 from typing import Dict, Any, List, Optional, Tuple
+
+logger = logging.getLogger("agent.core.win32_utils")
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -98,14 +102,39 @@ if IS_WINDOWS:
     ctypes.windll.kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
     ctypes.windll.kernel32.GlobalLock.restype = ctypes.c_void_p
     ctypes.windll.kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    ctypes.windll.kernel32.GlobalUnlock.restype = ctypes.c_bool
     ctypes.windll.kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    ctypes.windll.kernel32.GlobalFree.restype = ctypes.c_void_p
+    ctypes.windll.kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+
+    ctypes.windll.user32.OpenClipboard.restype = ctypes.c_bool
+    ctypes.windll.user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    ctypes.windll.user32.CloseClipboard.restype = ctypes.c_bool
+    ctypes.windll.user32.CloseClipboard.argtypes = []
+    ctypes.windll.user32.EmptyClipboard.restype = ctypes.c_bool
+    ctypes.windll.user32.EmptyClipboard.argtypes = []
+    ctypes.windll.user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+    ctypes.windll.user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
     ctypes.windll.user32.GetClipboardData.restype = ctypes.c_void_p
     ctypes.windll.user32.GetClipboardData.argtypes = [ctypes.c_uint]
     ctypes.windll.user32.SetClipboardData.restype = ctypes.c_void_p
     ctypes.windll.user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-    ctypes.windll.user32.OpenClipboard.argtypes = [ctypes.c_void_p]
-    ctypes.windll.user32.EmptyClipboard.argtypes = []
-    ctypes.windll.user32.CloseClipboard.argtypes = []
+
+    ctypes.windll.user32.GetForegroundWindow.restype = ctypes.c_void_p
+    ctypes.windll.user32.GetForegroundWindow.argtypes = []
+    ctypes.windll.user32.SetForegroundWindow.restype = ctypes.c_bool
+    ctypes.windll.user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    ctypes.windll.user32.IsWindow.restype = ctypes.c_bool
+    ctypes.windll.user32.IsWindow.argtypes = [ctypes.c_void_p]
+    ctypes.windll.user32.IsWindowVisible.restype = ctypes.c_bool
+    ctypes.windll.user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    ctypes.windll.user32.IsIconic.restype = ctypes.c_bool
+    ctypes.windll.user32.IsIconic.argtypes = [ctypes.c_void_p]
+
+    ctypes.windll.user32.SendInput.restype = ctypes.c_uint
+    ctypes.windll.user32.SendInput.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
+    ctypes.windll.user32.MapVirtualKeyW.restype = ctypes.c_uint
+    ctypes.windll.user32.MapVirtualKeyW.argtypes = [ctypes.c_uint, ctypes.c_uint]
 else:
     # Minimal mock definitions for non-Windows testing
     class KEYBDINPUT(ctypes.Structure):
@@ -151,8 +180,23 @@ VK_MAP = {
     "S": 0x53, "T": 0x54, "U": 0x55, "V": 0x56, "W": 0x57, "X": 0x58, "Y": 0x59, "Z": 0x5A
 }
 
-# Thread-level input serialization lock
-_KEYBOARD_LOCK = threading.RLock()
+# Unified thread-level global input serialization lock protecting all Windows mouse and keyboard operations
+_GLOBAL_INPUT_LOCK = threading.RLock()
+_KEYBOARD_LOCK = _GLOBAL_INPUT_LOCK
+
+def release_modifier_keys():
+    """Ensures any lingering modifier keys (Ctrl, Shift, Alt, Win) are physically and virtually released."""
+    if not IS_WINDOWS:
+        return
+    modifiers_vk = [0x11, 0x10, 0x12, 0x5B, 0x5C] # VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN
+    for vk in modifiers_vk:
+        state = ctypes.windll.user32.GetAsyncKeyState(vk)
+        if state & 0x8000:
+            scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+            ki = KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
+            u = INPUT_UNION(ki=ki)
+            inp = INPUT(type=INPUT_KEYBOARD, u=u)
+            ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
 def send_input_keyboard(vk_code: int, scan_code: int, flags: int):
     if not IS_WINDOWS:
@@ -162,18 +206,27 @@ def send_input_keyboard(vk_code: int, scan_code: int, flags: int):
         scan_code = ctypes.windll.user32.MapVirtualKeyW(vk_code, 0)
         # Fallback for virtual keys that MapVirtualKeyW might return 0 for
         if scan_code == 0:
-            if vk_code == 0x11: # VK_CONTROL
+            if vk_code in (0x11, 0xA2, 0xA3): # VK_CONTROL, VK_LCONTROL, VK_RCONTROL
                 scan_code = 0x1D
-            elif vk_code == 0x10: # VK_SHIFT
+            elif vk_code in (0x10, 0xA0, 0xA1): # VK_SHIFT, VK_LSHIFT, VK_RSHIFT
                 scan_code = 0x2A
-            elif vk_code == 0x12: # VK_MENU
+            elif vk_code in (0x12, 0xA4, 0xA5): # VK_MENU, VK_LMENU, VK_RMENU
                 scan_code = 0x38
+            elif vk_code == 0x56: # VK_V
+                scan_code = 0x2F
+            elif vk_code == 0x41: # VK_A
+                scan_code = 0x1E
+            elif vk_code == 0x43: # VK_C
+                scan_code = 0x2E
         
     with _KEYBOARD_LOCK:
         ki = KEYBDINPUT(wVk=vk_code, wScan=scan_code, dwFlags=flags, time=0, dwExtraInfo=0)
         u = INPUT_UNION(ki=ki)
         inp = INPUT(type=INPUT_KEYBOARD, u=u)
-        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+        sent = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+        if sent == 0:
+            # Fallback to keybd_event if SendInput is blocked by UIPI or session isolation
+            ctypes.windll.user32.keybd_event(vk_code, scan_code, flags, 0)
 
 def press_key(key_name: str):
     key = key_name.upper().strip()
@@ -181,9 +234,11 @@ def press_key(key_name: str):
     if not vk:
         raise ValueError(f"Unknown virtual key name: {key_name}")
     with _KEYBOARD_LOCK:
+        release_modifier_keys()
         send_input_keyboard(vk, 0, 0)
         time.sleep(0.02)
         send_input_keyboard(vk, 0, KEYEVENTF_KEYUP)
+        time.sleep(0.02)
 
 def hotkey(keys: List[str]):
     modifiers = []
@@ -197,6 +252,7 @@ def hotkey(keys: List[str]):
             base_keys.append(k_upper)
             
     with _KEYBOARD_LOCK:
+        release_modifier_keys()
         # Press modifiers
         for mod in modifiers:
             vk = VK_MAP.get(mod)
@@ -204,166 +260,166 @@ def hotkey(keys: List[str]):
                 send_input_keyboard(vk, 0, 0)
                 
         if modifiers:
-            time.sleep(0.03)
+            time.sleep(0.025)
                 
         # Press & Release base keys
         for bk in base_keys:
             vk = VK_MAP.get(bk)
             if vk:
                 send_input_keyboard(vk, 0, 0)
-                time.sleep(0.03)
+                time.sleep(0.025)
                 send_input_keyboard(vk, 0, KEYEVENTF_KEYUP)
                 
         if modifiers:
-            time.sleep(0.03)
+            time.sleep(0.025)
             
         # Release modifiers in reverse order
         for mod in reversed(modifiers):
             vk = VK_MAP.get(mod)
             if vk:
                 send_input_keyboard(vk, 0, KEYEVENTF_KEYUP)
+        time.sleep(0.02)
+
+def get_clipboard_text() -> Optional[str]:
+    """
+    Safely retrieves Unicode text currently on the Windows clipboard.
+    Returns None if clipboard is empty, holds non-text data, or cannot be opened.
+    """
+    if not IS_WINDOWS:
+        return None
+    CF_UNICODETEXT = 13
+    for _ in range(25):
+        if ctypes.windll.user32.OpenClipboard(None):
+            try:
+                if not ctypes.windll.user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                    return None
+                h_data = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
+                if not h_data:
+                    return None
+                p_data = ctypes.windll.kernel32.GlobalLock(h_data)
+                if p_data:
+                    try:
+                        text = ctypes.wstring_at(p_data)
+                        return text
+                    finally:
+                        ctypes.windll.kernel32.GlobalUnlock(h_data)
+            finally:
+                ctypes.windll.user32.CloseClipboard()
+            return None
+        time.sleep(0.015)
+    return None
 
 def set_clipboard_text(text: str) -> bool:
     """Sets Unicode text onto the Windows clipboard using 64-bit Win32 GlobalAlloc/SetClipboardData."""
     if not IS_WINDOWS:
         return False
+    CF_UNICODETEXT = 13
+    raw_bytes = text.encode("utf-16-le") + b"\x00\x00"
     for _ in range(30):
         if ctypes.windll.user32.OpenClipboard(None):
             try:
                 ctypes.windll.user32.EmptyClipboard()
-                raw_bytes = text.encode("utf-16-le") + b"\x00\x00"
                 h = ctypes.windll.kernel32.GlobalAlloc(0x0042, len(raw_bytes))  # GMEM_MOVEABLE | GMEM_ZEROINIT
                 if h:
                     p = ctypes.windll.kernel32.GlobalLock(h)
                     if p:
                         ctypes.memmove(p, raw_bytes, len(raw_bytes))
                         ctypes.windll.kernel32.GlobalUnlock(h)
-                        ctypes.windll.user32.SetClipboardData(13, h)  # CF_UNICODETEXT
-                        return True
+                        res = ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, h)
+                        if res:
+                            return True
+                        else:
+                            ctypes.windll.kernel32.GlobalFree(h)
             finally:
                 ctypes.windll.user32.CloseClipboard()
         time.sleep(0.02)
     return False
 
-def type_text(text: str, chunk_size: int = 1, call_id: str = ""):
+def type_text(text: str, chunk_size: int = 1, call_id: str = "", target_window_hwnd: Optional[int] = None):
     """
-    Production-quality text typing for Windows applications:
-    - Sets high-fidelity Unicode clipboard text via 64-bit Win32 GlobalAlloc/SetClipboardData and injects Ctrl+V.
-    - Eliminates all Windows OS typematic auto-repeat latching, character drops, and dead-key corruption.
-    - Guarantees 100% mathematical character fidelity for all languages, symbols, and multiline text.
-    - Serialized under _KEYBOARD_LOCK to guarantee input stream integrity.
+    Production-quality serialized text injection for Windows applications:
+    1. Acquires _KEYBOARD_LOCK to guarantee single serialized input pipeline.
+    2. Releases any stuck modifier keys.
+    3. Safely saves previous clipboard contents.
+    4. Places requested Unicode text onto clipboard.
+    5. Verifies target window focus and restores focus if needed.
+    6. Injects exactly one Ctrl+V keystroke combination.
+    7. Waits for application to process paste.
+    8. Restores previous clipboard contents where possible.
+    9. Records comprehensive execution trace.
     """
     if not IS_WINDOWS or not text:
         return
 
+    start_time = time.time()
     with _KEYBOARD_LOCK:
         from agent.core.keyboard_trace import KEYBOARD_TRACER
-        KEYBOARD_TRACER.record_type_text_start(call_id, text, chunk_size)
+        KEYBOARD_TRACER.record_type_text_start(call_id, text, chunk_size, typing_path="win32_clipboard_paste")
         
         normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
         
-        # Primary high-reliability path: Win32 Unicode clipboard injection + Ctrl+V
-        if set_clipboard_text(normalized_text):
-            time.sleep(0.03)
-            hotkey(["CTRL", "V"])
-            time.sleep(0.08)
-            return
-        n_chars = len(normalized_text)
-        char_idx = 0
-        total_events_injected = 0
-        chunk_idx = 0
-
-        while char_idx < n_chars:
-            chunk = normalized_text[char_idx:char_idx + chunk_size]
-            input_list = []
-            char_map = []
-            event_idx = 0
-
-            for local_i, char in enumerate(chunk):
-                ev_start = event_idx
-                if char == '\n':
-                    ki_down = KEYBDINPUT(wVk=0x0D, wScan=0x1C, dwFlags=0, time=0, dwExtraInfo=0)
-                    input_list.append(INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki_down)))
-                    ki_up = KEYBDINPUT(wVk=0x0D, wScan=0x1C, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
-                    input_list.append(INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki_up)))
-                    event_idx += 2
-                elif char == '\t':
-                    ki_down = KEYBDINPUT(wVk=0x09, wScan=0x0F, dwFlags=0, time=0, dwExtraInfo=0)
-                    input_list.append(INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki_down)))
-                    ki_up = KEYBDINPUT(wVk=0x09, wScan=0x0F, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
-                    input_list.append(INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki_up)))
-                    event_idx += 2
-                else:
-                    code_units = char.encode('utf-16-le')
-                    for cu_idx in range(0, len(code_units), 2):
-                        val = int.from_bytes(code_units[cu_idx:cu_idx + 2], byteorder='little')
-                        ki_down = KEYBDINPUT(wVk=0, wScan=val, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)
-                        input_list.append(INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki_down)))
-                        ki_up = KEYBDINPUT(wVk=0, wScan=val, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
-                        input_list.append(INPUT(type=INPUT_KEYBOARD, u=INPUT_UNION(ki=ki_up)))
-                        event_idx += 2
-                ev_end = event_idx
-                char_map.append((local_i, char_idx + local_i, ev_start, ev_end, char))
-
-            count = len(input_list)
-            if count > 0:
-                input_array = (INPUT * count)(*input_list)
-                sent = ctypes.windll.user32.SendInput(count, input_array, ctypes.sizeof(INPUT))
+        # 1. Release lingering modifier keys
+        release_modifier_keys()
+        
+        # 2. Save current clipboard contents
+        prev_clipboard = get_clipboard_text()
+        
+        # 3. Place requested text onto clipboard
+        clip_set = set_clipboard_text(normalized_text)
+        if not clip_set:
+            raise RuntimeError("Failed to set text onto Windows clipboard after multiple attempts.")
+            
+        # 4. Verify target window focus
+        target_hwnd = target_window_hwnd
+        if not target_hwnd:
+            target_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            
+        if target_hwnd and ctypes.windll.user32.IsWindow(target_hwnd):
+            if ctypes.windll.user32.GetForegroundWindow() != target_hwnd or ctypes.windll.user32.IsIconic(target_hwnd):
+                focus_window(target_hwnd)
+                time.sleep(0.05)
                 
-                KEYBOARD_TRACER.record_chunk_sent(
-                    call_id=call_id,
-                    chunk_idx=chunk_idx,
-                    char_start=char_idx,
-                    char_end=char_idx + len(chunk),
-                    chunk_str=chunk,
-                    events_generated=count,
-                    events_sent=sent,
-                    retried=False
-                )
-                chunk_idx += 1
+        # 5. Execute exactly one Ctrl+V operation
+        send_input_keyboard(VK_MAP["CTRL"], 0x1D, 0)
+        time.sleep(0.025)
+        send_input_keyboard(VK_MAP["V"], 0x2F, 0)
+        time.sleep(0.025)
+        send_input_keyboard(VK_MAP["V"], 0x2F, KEYEVENTF_KEYUP)
+        time.sleep(0.025)
+        send_input_keyboard(VK_MAP["CTRL"], 0x1D, KEYEVENTF_KEYUP)
+        
+        # 6. Wait for the target application to finish consuming the paste message
+        # Give sufficient time for application message queue and clipboard ingestion
+        wait_duration = 0.45 if len(normalized_text) > 500 else 0.35
+        time.sleep(wait_duration)
+        
+        # 7. Restore previous clipboard contents if any existed
+        clipboard_restored = False
+        if prev_clipboard is not None and prev_clipboard != normalized_text:
+            clipboard_restored = set_clipboard_text(prev_clipboard)
+            
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Fetch target window title for trace
+        target_title = None
+        if target_hwnd:
+            length = ctypes.windll.user32.GetWindowTextLengthW(target_hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(target_hwnd, buf, length + 1)
+                target_title = buf.value
                 
-                if sent == 0:
-                    err = ctypes.GetLastError()
-                    if err == 5:
-                        char_idx += len(chunk)
-                        continue
-                    elif err != 0:
-                        raise RuntimeError(
-                            f"SendInput failed to inject keyboard events (error code {err}). "
-                            f"The target window may have higher integrity/admin permissions (UIPI) or is blocked."
-                        )
-                elif sent < count:
-                    total_events_injected += sent
-                    complete_chars = 0
-                    partially_split_char = None
-                    for _, glob_i, ev_s, ev_e, ch_val in char_map:
-                        if sent >= ev_e:
-                            complete_chars += 1
-                        elif sent > ev_s:
-                            partially_split_char = {
-                                "global_index": glob_i,
-                                "char": ch_val,
-                                "events_injected": sent - ev_s,
-                                "events_expected": ev_e - ev_s
-                            }
-                            break
-                        else:
-                            break
-                    raise RuntimeError(
-                        f"SendInput partial injection failure: {sent}/{count} events injected for chunk at char {char_idx}. "
-                        f"Complete characters injected in chunk: {complete_chars}/{len(chunk)}. "
-                        f"Partially split character: {partially_split_char}. "
-                        f"Total events injected across all chunks: {total_events_injected}. "
-                        f"Aborting to prevent text corruption."
-                    )
-                total_events_injected += count
-
-            char_idx += len(chunk)
-            if char_idx < n_chars:
-                if any(ord(c) > 127 for c in chunk):
-                    time.sleep(0.020)
-                else:
-                    time.sleep(0.015)
+        # 8. Record execution trace
+        KEYBOARD_TRACER.record_type_text_completed(
+            call_id=call_id,
+            text=normalized_text,
+            typing_path="win32_clipboard_paste",
+            target_hwnd=target_hwnd,
+            target_title=target_title,
+            clipboard_restored=clipboard_restored,
+            duration_ms=duration_ms,
+            retried=False
+        )
 
 # --- Core Mouse and Screen State Injection ---
 
@@ -384,10 +440,11 @@ def get_cursor_position() -> Tuple[int, int]:
 def send_mouse_event(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
     if not IS_WINDOWS:
         return
-    mi = MOUSEINPUT(dx=dx, dy=dy, mouseData=data, dwFlags=flags, time=0, dwExtraInfo=0)
-    u = INPUT_UNION(mi=mi)
-    inp = INPUT(type=INPUT_MOUSE, u=u)
-    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    with _GLOBAL_INPUT_LOCK:
+        mi = MOUSEINPUT(dx=dx, dy=dy, mouseData=data, dwFlags=flags, time=0, dwExtraInfo=0)
+        u = INPUT_UNION(mi=mi)
+        inp = INPUT(type=INPUT_MOUSE, u=u)
+        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
 def send_mouse_move_absolute(x: int, y: int):
     if not IS_WINDOWS:
@@ -400,91 +457,134 @@ def send_mouse_move_absolute(x: int, y: int):
 def mouse_move(x: int, y: int, duration_ms: int = 0):
     if not IS_WINDOWS:
         return
-    if duration_ms <= 0:
-        if HELD_BUTTONS:
-            send_mouse_move_absolute(x, y)
-        else:
-            ctypes.windll.user32.SetCursorPos(x, y)
-            send_mouse_move_absolute(x, y)
-    else:
-        # Interpolate mouse movement smoothly
-        start_x, start_y = get_cursor_position()
-        steps = max(1, duration_ms // 10)  # 10ms intervals
-        for i in range(1, steps + 1):
-            t = i / steps
-            curr_x = int(start_x + (x - start_x) * t)
-            curr_y = int(start_y + (y - start_y) * t)
+    with _GLOBAL_INPUT_LOCK:
+        if duration_ms <= 0:
             if HELD_BUTTONS:
-                send_mouse_move_absolute(curr_x, curr_y)
+                send_mouse_move_absolute(x, y)
             else:
-                ctypes.windll.user32.SetCursorPos(curr_x, curr_y)
-                send_mouse_move_absolute(curr_x, curr_y)
-            time.sleep(0.01)
+                ctypes.windll.user32.SetCursorPos(x, y)
+                send_mouse_move_absolute(x, y)
+        else:
+            # Interpolate mouse movement smoothly
+            start_x, start_y = get_cursor_position()
+            dist = math.hypot(x - start_x, y - start_y)
+            steps = max(1, min(60, int(dist / 8)))
+            for i in range(1, steps + 1):
+                t = i / steps
+                curr_x = int(start_x + (x - start_x) * t)
+                curr_y = int(start_y + (y - start_y) * t)
+                if HELD_BUTTONS:
+                    send_mouse_move_absolute(curr_x, curr_y)
+                else:
+                    ctypes.windll.user32.SetCursorPos(curr_x, curr_y)
+                    send_mouse_move_absolute(curr_x, curr_y)
+                time.sleep(0.01)
 
 def mouse_down(button: str = "left"):
     b = button.lower().strip()
-    if b == "left":
-        send_mouse_event(MOUSEEVENTF_LEFTDOWN)
-        HELD_BUTTONS.add("left")
-    elif b == "right":
-        send_mouse_event(MOUSEEVENTF_RIGHTDOWN)
-        HELD_BUTTONS.add("right")
-    elif b == "middle":
-        send_mouse_event(MOUSEEVENTF_MIDDLEDOWN)
-        HELD_BUTTONS.add("middle")
+    with _GLOBAL_INPUT_LOCK:
+        if b == "left":
+            send_mouse_event(MOUSEEVENTF_LEFTDOWN)
+            HELD_BUTTONS.add("left")
+        elif b == "right":
+            send_mouse_event(MOUSEEVENTF_RIGHTDOWN)
+            HELD_BUTTONS.add("right")
+        elif b == "middle":
+            send_mouse_event(MOUSEEVENTF_MIDDLEDOWN)
+            HELD_BUTTONS.add("middle")
 
 def mouse_up(button: str = "left"):
     b = button.lower().strip()
-    if b == "left":
-        send_mouse_event(MOUSEEVENTF_LEFTUP)
-        HELD_BUTTONS.discard("left")
-    elif b == "right":
-        send_mouse_event(MOUSEEVENTF_RIGHTUP)
-        HELD_BUTTONS.discard("right")
-    elif b == "middle":
-        send_mouse_event(MOUSEEVENTF_MIDDLEUP)
-        HELD_BUTTONS.discard("middle")
+    with _GLOBAL_INPUT_LOCK:
+        if b == "left":
+            send_mouse_event(MOUSEEVENTF_LEFTUP)
+            HELD_BUTTONS.discard("left")
+        elif b == "right":
+            send_mouse_event(MOUSEEVENTF_RIGHTUP)
+            HELD_BUTTONS.discard("right")
+        elif b == "middle":
+            send_mouse_event(MOUSEEVENTF_MIDDLEUP)
+            HELD_BUTTONS.discard("middle")
 
 def mouse_click(x: int, y: int, button: str = "left", click_count: int = 1):
-    mouse_move(x, y)
-    time.sleep(0.05)
-    for _ in range(click_count):
-        mouse_down(button)
-        time.sleep(0.02)
-        mouse_up(button)
-        if click_count > 1:
-            time.sleep(0.1)
+    with _GLOBAL_INPUT_LOCK:
+        mouse_move(x, y)
+        time.sleep(0.05)
+        for _ in range(click_count):
+            mouse_down(button)
+            time.sleep(0.02)
+            mouse_up(button)
+            if click_count > 1:
+                time.sleep(0.1)
 
 def mouse_double_click(x: int, y: int, button: str = "left"):
     mouse_click(x, y, button, click_count=2)
 
-def mouse_drag(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 200, button: str = "left"):
-    # 1. Move to start position
-    mouse_move(start_x, start_y)
-    time.sleep(0.05)
-    # 2. Press down
-    mouse_down(button)
-    time.sleep(0.05)
-    try:
-        # 3. Smoothly move to end position using SendInput absolute movement (maintains down state across canvas)
-        steps = max(10, duration_ms // 15)
-        for i in range(1, steps + 1):
-            t = i / steps
-            curr_x = int(start_x + (end_x - start_x) * t)
-            curr_y = int(start_y + (end_y - start_y) * t)
-            send_mouse_move_absolute(curr_x, curr_y)
-            time.sleep(0.015)
-        time.sleep(0.05)
-    finally:
-        # 4. Release button unconditionally
-        mouse_up(button)
-        time.sleep(0.05)
+def mouse_drag(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 250, button: str = "left") -> bool:
+    """
+    Executes a continuous, distance-interpolated mouse drag with thread-safe global input serialization,
+    active window focus monitoring, and guaranteed atomic button release.
+    """
+    if not IS_WINDOWS:
+        return True
+    with _GLOBAL_INPUT_LOCK:
+        screen_w, screen_h = get_screen_size()
+        
+        # Calculate Euclidean distance for dynamic interpolation density
+        dist = math.hypot(end_x - start_x, end_y - start_y)
+        steps = max(18, min(100, int(dist / 6)))
+        
+        # 1. Position cursor at start position
+        norm_sx = int((start_x * 65535) / (screen_w - 1)) if screen_w > 1 else 0
+        norm_sy = int((start_y * 65535) / (screen_h - 1)) if screen_h > 1 else 0
+        ctypes.windll.user32.SetCursorPos(start_x, start_y)
+        send_mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx=norm_sx, dy=norm_sy)
+        time.sleep(0.04)
+        
+        # 2. Press down with explicit atomic start coordinates
+        flag_down = MOUSEEVENTF_LEFTDOWN if button == "left" else (MOUSEEVENTF_RIGHTDOWN if button == "right" else MOUSEEVENTF_MIDDLEDOWN)
+        send_mouse_event(flag_down | MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx=norm_sx, dy=norm_sy)
+        HELD_BUTTONS.add(button)
+        time.sleep(0.04)
+        
+        aborted = False
+        try:
+            # 3. Smoothly move across the trajectory using synchronized SetCursorPos and SendInput events
+            for i in range(1, steps + 1):
+                # Sample active foreground window periodically to detect accidental Snap Assist triggers
+                if i % 6 == 0:
+                    active = get_active_window_details()
+                    if active and "snap assist" in (active.get("title") or "").lower():
+                        logger.warning(f"Focus unexpectedly shifted to Snap Assist during drag ({start_x},{start_y} -> {end_x},{end_y}). Aborting stroke.")
+                        aborted = True
+                        break
+                
+                t = i / steps
+                curr_x = int(start_x + (end_x - start_x) * t)
+                curr_y = int(start_y + (end_y - start_y) * t)
+                norm_x = int((curr_x * 65535) / (screen_w - 1)) if screen_w > 1 else 0
+                norm_y = int((curr_y * 65535) / (screen_h - 1)) if screen_h > 1 else 0
+                ctypes.windll.user32.SetCursorPos(curr_x, curr_y)
+                send_mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx=norm_x, dy=norm_y)
+                time.sleep(0.010)
+            time.sleep(0.04)
+        finally:
+            # 4. Release button unconditionally at end coordinates
+            norm_ex = int((end_x * 65535) / (screen_w - 1)) if screen_w > 1 else 0
+            norm_ey = int((end_y * 65535) / (screen_h - 1)) if screen_h > 1 else 0
+            flag_up = MOUSEEVENTF_LEFTUP if button == "left" else (MOUSEEVENTF_RIGHTUP if button == "right" else MOUSEEVENTF_MIDDLEUP)
+            send_mouse_event(flag_up | MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx=norm_ex, dy=norm_ey)
+            HELD_BUTTONS.discard(button)
+            time.sleep(0.04)
+            
+        return not aborted
 
 def release_all_buttons():
     # Releases any mouse button currently registered in the HELD_BUTTONS set
-    for button in list(HELD_BUTTONS):
-        mouse_up(button)
-    HELD_BUTTONS.clear()
+    with _GLOBAL_INPUT_LOCK:
+        for button in list(HELD_BUTTONS):
+            mouse_up(button)
+        HELD_BUTTONS.clear()
 
 # --- Windows Management Injection ---
 
@@ -494,6 +594,8 @@ def _attach_thread_to_desktop():
     try:
         # DESKTOP_ALL_ACCESS = 0x01FF
         hdesk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x01FF)
+        if not hdesk:
+            hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x01FF)
         if hdesk:
             ctypes.windll.user32.SetThreadDesktop(hdesk)
     except Exception:
@@ -639,19 +741,13 @@ def focus_window(hwnd: int) -> bool:
         ctypes.windll.user32.AttachThreadInput(current_thread_id, target_thread_id, True)
 
     try:
-        # Unlock Windows foreground lockout via simulated Alt key pulse
-        ctypes.windll.user32.keybd_event(0x12, 0x38, 0, 0)
-        time.sleep(0.01)
-        ctypes.windll.user32.keybd_event(0x12, 0x38, 2, 0)  # KEYEVENTF_KEYUP
-        time.sleep(0.02)
-        
         ctypes.windll.user32.AllowSetForegroundWindow(-1)
         if ctypes.windll.user32.IsIconic(hwnd):
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
         else:
             ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
             
-        time.sleep(0.05)
+        time.sleep(0.03)
         ctypes.windll.user32.BringWindowToTop(hwnd)
         ctypes.windll.user32.SetForegroundWindow(hwnd)
         ctypes.windll.user32.SetActiveWindow(hwnd)
@@ -674,15 +770,93 @@ def close_window(hwnd: int) -> bool:
     success = ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
     return bool(success)
 
+def get_window_content_bounds(hwnd_or_win: Any) -> Dict[str, int]:
+    """
+    Calculates the safe, usable content/canvas area for a window,
+    distinguishing window frame bounds from interior content/canvas regions.
+    Excludes non-client title bar captions, window borders, and ribbon toolbars.
+    """
+    if isinstance(hwnd_or_win, dict):
+        bounds = hwnd_or_win.get("bounds", {"x": 0, "y": 0, "width": 1920, "height": 1080})
+        proc = (hwnd_or_win.get("process") or "").lower()
+        title = (hwnd_or_win.get("title") or "").lower()
+    else:
+        hwnd = int(hwnd_or_win) if hwnd_or_win else 0
+        details = None
+        for w in list_desktop_windows():
+            if w["hwnd"] == hwnd:
+                details = w
+                break
+        if details:
+            bounds = details["bounds"]
+            proc = (details.get("process") or "").lower()
+            title = (details.get("title") or "").lower()
+        else:
+            bounds = {"x": 0, "y": 0, "width": 1920, "height": 1080}
+            proc = ""
+            title = ""
+
+    bx = bounds["x"]
+    by = bounds["y"]
+    bw = bounds["width"]
+    bh = bounds["height"]
+
+    is_paint = ("mspaint" in proc or "paint" in proc or "paint" in title)
+    is_notepad = ("notepad" in proc or "notepad" in title)
+
+    if is_paint:
+        # In modern Windows 11 Paint with Per-Monitor DPI scaling:
+        # Top title bar + ribbon toolbar (File, Edit, Brushes, Colors, Shapes) is ~430px
+        # Safe usable white canvas starts at top_offset = 450px
+        # Left side margin is ~100px, right margin ~100px, bottom status bar is ~80px
+        top_offset = 450
+        left_margin = 100
+        right_margin = 100
+        bottom_margin = 80
+        is_canvas = True
+    elif is_notepad:
+        top_offset = 80
+        left_margin = 20
+        right_margin = 20
+        bottom_margin = 30
+        is_canvas = False
+    else:
+        # Generic window: title bar is ~50px, border is ~10px
+        top_offset = 55
+        left_margin = 15
+        right_margin = 15
+        bottom_margin = 20
+        is_canvas = False
+
+    content_w = max(50, bw - (left_margin + right_margin))
+    content_h = max(50, bh - (top_offset + bottom_margin))
+
+    return {
+        "x": bx + left_margin,
+        "y": by + top_offset,
+        "width": content_w,
+        "height": content_h,
+        "window_x": bx,
+        "window_y": by,
+        "window_width": bw,
+        "window_height": bh,
+        "top_offset": top_offset,
+        "left_margin": left_margin,
+        "is_canvas": is_canvas
+    }
+
 def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, int]], Optional[str]]:
     """
-    Checks if a target window is specified in the arguments.
-    If so, converts x, y relative coords to absolute coords WITHOUT mutating the original arguments dict.
-    Brings the target window to the foreground if specified.
-    Checks:
-    - If window exists.
-    - If window is minimized or invisible where interaction is impossible.
-    - If window bounds are valid.
+    Resolves input coordinates across:
+    - SCREEN COORDINATES (absolute monitor pixels)
+    - WINDOW COORDINATES (relative to window outer frame)
+    - CONTENT/CANVAS COORDINATES (relative to usable content area)
+
+    Prevents:
+    - Dragging window title bars (which moves windows and triggers Snap Assist)
+    - Reaching screen edges / snap zones unintentionally
+    - Inputting coordinates outside the active monitor / window boundaries
+
     Returns: (success, resolved_coords_dict, error_message)
     """
     target_window = arguments.get("target_window")
@@ -690,77 +864,163 @@ def resolve_coordinates(arguments: Dict[str, Any]) -> Tuple[bool, Optional[Dict[
         target_obj = arguments["target"]
         if isinstance(target_obj, dict):
             target_window = target_obj.get("window")
-            
-    x = arguments.get("x")
-    y = arguments.get("y")
-    
-    is_drag = "start_x" in arguments
-    if is_drag:
-        start_x = arguments.get("start_x")
-        start_y = arguments.get("start_y")
-        end_x = arguments.get("end_x")
-        end_y = arguments.get("end_y")
-        
-    if not target_window:
-        if is_drag:
-            return True, {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}, None
-        return True, {"x": x, "y": y}, None
 
-    # Lookup window
+    coord_space = str(arguments.get("coordinate_space", "")).lower().strip()
+    is_drag = "start_x" in arguments
+    screen_w, screen_h = get_screen_size()
+
+    if is_drag:
+        start_x = int(arguments.get("start_x", 0))
+        start_y = int(arguments.get("start_y", 0))
+        end_x = int(arguments.get("end_x", 0))
+        end_y = int(arguments.get("end_y", 0))
+    else:
+        x = int(arguments.get("x", 0))
+        y = int(arguments.get("y", 0))
+
+    # Retrieve scaling metadata if available
+    scale_x = 1.0
+    scale_y = 1.0
+    latest_obs = None
+    try:
+        from agent.core.vision import SCREEN_OBSERVER
+        latest_obs = SCREEN_OBSERVER.latest_observation
+    except Exception:
+        pass
+
+    if latest_obs and "scale_factors" in latest_obs:
+        scale_x = float(latest_obs["scale_factors"].get("scale_x", 1.0))
+        scale_y = float(latest_obs["scale_factors"].get("scale_y", 1.0))
+
+    if coord_space == "screenshot":
+        if is_drag:
+            start_x = int(start_x * scale_x)
+            start_y = int(start_y * scale_y)
+            end_x = int(end_x * scale_x)
+            end_y = int(end_y * scale_y)
+        else:
+            x = int(x * scale_x)
+            y = int(y * scale_y)
+
+    if not target_window:
+        # Raw screen coordinate path
+        if is_drag:
+            # Prevent drags that collide with screen top Snap Assist triggers (y <= 5)
+            if start_y <= 5 or end_y <= 5:
+                return False, None, "Drag coordinates touch screen top edge (y <= 5) which triggers Windows Snap Assist."
+            if not (0 <= start_x < screen_w) or not (0 <= start_y < screen_h) or \
+               not (0 <= end_x < screen_w) or not (0 <= end_y < screen_h):
+                return False, None, f"Drag coordinates ({start_x},{start_y} -> {end_x},{end_y}) are outside screen boundaries ({screen_w}x{screen_h})."
+            res = {"start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y}
+            logger.info(f"[COORDINATE RESOLUTION DIAGNOSTIC] Space={coord_space or 'screen'} Raw={arguments} Scale=({scale_x:.2f},{scale_y:.2f}) -> Resolved={res}")
+            return True, res, None
+        else:
+            if not (0 <= x < screen_w) or not (0 <= y < screen_h):
+                return False, None, f"Coordinates ({x}, {y}) are outside screen boundaries ({screen_w}x{screen_h})."
+            res = {"x": x, "y": y}
+            logger.info(f"[COORDINATE RESOLUTION DIAGNOSTIC] Space={coord_space or 'screen'} Raw={arguments} Scale=({scale_x:.2f},{scale_y:.2f}) -> Resolved={res}")
+            return True, res, None
+
+    # Lookup target window
     windows = list_desktop_windows()
     target_hwnd = None
     target_win = None
-    
+
     for w in windows:
-        if target_window.lower() in w["title"].lower():
-            target_hwnd = w["hwnd"]
+        if target_window.lower() in w.get("title", "").lower() or target_window.lower() in w.get("process", "").lower():
+            target_hwnd = w.get("hwnd", 1)
             target_win = w
             break
-            
-    if not target_hwnd:
-        return False, None, f"Target window '{target_window}' not found on the desktop."
-        
-    # Ensure target window is brought to foreground
-    focus_window(target_hwnd)
-        
-    # Check if window is minimized or invisible
-    if IS_WINDOWS:
+
+    if not target_win:
+        return False, None, f"Target window '{target_window}' not found on desktop."
+
+    if target_hwnd:
+        focus_window(target_hwnd)
+    
+    if IS_WINDOWS and target_hwnd and ctypes.windll.user32.IsWindow(target_hwnd):
         if ctypes.windll.user32.IsIconic(target_hwnd):
-            return False, None, f"Target window '{target_window}' is minimized. Cannot execute coordinate-relative inputs."
+            return False, None, f"Target window '{target_window}' is minimized."
         if not ctypes.windll.user32.IsWindowVisible(target_hwnd):
             return False, None, f"Target window '{target_window}' is invisible."
-            
+
     bounds = target_win["bounds"]
     if bounds["width"] <= 0 or bounds["height"] <= 0:
         return False, None, f"Target window '{target_window}' has invalid boundaries ({bounds['width']}x{bounds['height']})."
-        
-    # Convert coordinates WITHOUT in-place mutation of caller's arguments dictionary
+
+    content_bounds = get_window_content_bounds(target_win)
+
+    # Determine coordinate space: if content/canvas space, or default for canvas apps (e.g. Paint)
+    use_content_space = (coord_space in ("content", "canvas")) or (content_bounds["is_canvas"] and coord_space != "window")
+
+    if use_content_space:
+        base_x = content_bounds["x"]
+        base_y = content_bounds["y"]
+        max_w = content_bounds["width"]
+        max_h = content_bounds["height"]
+        space_name = "content/canvas"
+    else:
+        base_x = bounds["x"]
+        base_y = bounds["y"]
+        max_w = bounds["width"]
+        max_h = bounds["height"]
+        space_name = "window"
+
     if is_drag:
-        abs_start_x = bounds["x"] + start_x
-        abs_start_y = bounds["y"] + start_y
-        abs_end_x = bounds["x"] + end_x
-        abs_end_y = bounds["y"] + end_y
-        
-        screen_w, screen_h = get_screen_size()
+        # Check that relative coordinates are within target space
+        if (start_x < 0 or start_x > max_w or start_y < 0 or start_y > max_h or
+            end_x < 0 or end_x > max_w or end_y < 0 or end_y > max_h):
+            # If coordinates are already absolute screen coords within bounds, keep them
+            if (bounds["x"] <= start_x < bounds["x"] + bounds["width"] and
+                bounds["y"] <= start_y < bounds["y"] + bounds["height"] and
+                bounds["x"] <= end_x < bounds["x"] + bounds["width"] and
+                bounds["y"] <= end_y < bounds["y"] + bounds["height"]):
+                abs_start_x = start_x
+                abs_start_y = start_y
+                abs_end_x = end_x
+                abs_end_y = end_y
+            else:
+                return False, None, f"Drag coordinates exceed {space_name} bounds (max: {max_w}x{max_h})."
+        else:
+            abs_start_x = base_x + start_x
+            abs_start_y = base_y + start_y
+            abs_end_x = base_x + end_x
+            abs_end_y = base_y + end_y
+
+        # Prevent dragging on title bar header
+        if abs_start_y < bounds["y"] + 45 or abs_end_y < bounds["y"] + 45:
+            return False, None, "Drag coordinates target the window title bar/caption area, which triggers window movements and Snap Assist instead of drawing."
+
+        # Verify absolute screen bounds
         if not (0 <= abs_start_x < screen_w) or not (0 <= abs_start_y < screen_h) or \
            not (0 <= abs_end_x < screen_w) or not (0 <= abs_end_y < screen_h):
-            return False, None, f"Converted drag coordinates (start: {abs_start_x},{abs_start_y}; end: {abs_end_x},{abs_end_y}) are outside screen boundaries."
-            
-        return True, {
+            return False, None, f"Converted drag coordinates ({abs_start_x},{abs_start_y} -> {abs_end_x},{abs_end_y}) are outside screen boundaries."
+
+        res = {
             "start_x": abs_start_x,
             "start_y": abs_start_y,
             "end_x": abs_end_x,
             "end_y": abs_end_y
-        }, None
+        }
+        logger.info(f"[COORDINATE RESOLUTION DIAGNOSTIC] Space={coord_space or space_name} Target='{target_window}' Raw={arguments} Base=({base_x},{base_y}) Scale=({scale_x:.2f},{scale_y:.2f}) -> Resolved={res}")
+        return True, res, None
     else:
-        abs_x = bounds["x"] + x
-        abs_y = bounds["y"] + y
-        
-        screen_w, screen_h = get_screen_size()
+        if x < 0 or x > max_w or y < 0 or y > max_h:
+            if bounds["x"] <= x < bounds["x"] + bounds["width"] and bounds["y"] <= y < bounds["y"] + bounds["height"]:
+                abs_x = x
+                abs_y = y
+            else:
+                return False, None, f"Coordinates ({x}, {y}) exceed {space_name} bounds (max: {max_w}x{max_h})."
+        else:
+            abs_x = base_x + x
+            abs_y = base_y + y
+
         if not (0 <= abs_x < screen_w) or not (0 <= abs_y < screen_h):
             return False, None, f"Converted coordinates ({abs_x}, {abs_y}) are outside screen boundaries."
-            
-        return True, {"x": abs_x, "y": abs_y}, None
+
+        res = {"x": abs_x, "y": abs_y}
+        logger.info(f"[COORDINATE RESOLUTION DIAGNOSTIC] Space={coord_space or space_name} Target='{target_window}' Raw={arguments} Base=({base_x},{base_y}) Scale=({scale_x:.2f},{scale_y:.2f}) -> Resolved={res}")
+        return True, res, None
 
 def get_installed_applications():
     """
