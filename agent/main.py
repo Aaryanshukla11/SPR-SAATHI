@@ -1,16 +1,19 @@
 import asyncio
 import sys
+import os
+import datetime
+import time
 import uvicorn
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import agent components
 from agent.core.state import StateTracker
+from agent.core.task_manager import TaskManager
 from agent.core.planner import RuleBasedPlanner
 from agent.core.executor import ToolExecutor
 from agent.core.loop import AgentLoop
@@ -21,9 +24,16 @@ from agent.control.takeover import TakeoverManager
 from agent.models.local import LocalModelProvider
 from agent.models.api import ApiModelProvider
 from agent.core import win32_utils
+from agent.core.memory import MEMORY_MANAGER, MemoryType, MemoryItem
+from agent.core.workspace import WORKSPACE_MANAGER, FileOrigin, FileType
+from agent.skills import SKILL_REGISTRY, get_skill_registry
+from agent.core.specialists import SPECIALIST_DELEGATOR, SpecialistType
+from agent.core.production_hardening import MEMORY_MONITOR, CRASH_RECOVERY
+from agent.models.router import ModelRouter, PrivacyLevel
 
 # Initialize core modules
 state_tracker = StateTracker()
+task_manager = TaskManager(state_tracker=state_tracker)
 policy_manager = PolicyManager()
 permission_broker = PermissionBroker(policy_manager, state_tracker)
 takeover_manager = TakeoverManager()
@@ -33,6 +43,7 @@ if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.en
     current_model_provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
 else:
     current_model_provider = LocalModelProvider(model_name="qwen2.5:latest")
+model_router = ModelRouter(default_provider=current_model_provider)
 planner = RuleBasedPlanner(current_model_provider)
 tools = get_all_tools()
 executor = ToolExecutor(tools, permission_broker, takeover_manager)
@@ -100,7 +111,7 @@ async def on_permission_prompt(request_id: str, tool_name: str, arguments: Dict[
     
     await broadcast_event({
         "event_type": "permission_required",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": state_tracker.task_id,
         "message": f"Tool '{tool_name}' requires permission to run.",
         "payload": {
@@ -122,7 +133,8 @@ agent_loop = AgentLoop(
     planner=planner,
     executor=executor,
     takeover_manager=takeover_manager,
-    broadcast_callback=broadcast_event
+    broadcast_callback=broadcast_event,
+    task_manager=task_manager
 )
 
 # Pydantic Schemas matching the shared contracts
@@ -155,6 +167,26 @@ class PolicyConfigRequest(BaseModel):
 class ScopeUpdate(BaseModel):
     level: str  # "allow" | "deny" | "prompt"
 
+class QuestionResponseRequest(BaseModel):
+    response: str
+
+class MemoryCreateRequest(BaseModel):
+    key: str
+    content: str
+    memory_type: str = "preference_memory"
+    tags: Optional[List[str]] = None
+
+class MemorySearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+
+class SkillExecuteRequest(BaseModel):
+    parameters: Dict[str, Any]
+
+class SpecialistDelegateRequest(BaseModel):
+    task: str
+    context: Optional[Dict[str, Any]] = None
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
@@ -171,11 +203,14 @@ async def chat_endpoint(req: ChatRequest):
     
     await broadcast_event({
         "event_type": "chat.started",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": None,
         "message": f"User: {user_msg[:100]}",
         "payload": {"message": user_msg}
     })
+
+    from agent.core.memory import MEMORY_MANAGER
+    MEMORY_MANAGER.record_conversation_turn("user", user_msg)
 
     default_system = (
         "You are SPR SAATHI in Chatbot Mode — a highly capable, knowledgeable, and helpful AI assistant (similar to ChatGPT).\n"
@@ -184,6 +219,14 @@ async def chat_endpoint(req: ChatRequest):
         "IMPORTANT: In this mode, you are operating strictly as a conversational chatbot. You do not control the user's computer or execute OS tools."
     )
     sys_instruction = req.system_instruction or default_system
+
+    try:
+        relevant_mems = MEMORY_MANAGER.retrieve_relevant(user_msg, limit=3)
+        if relevant_mems:
+            mem_text = "\n".join(f"- {m.key}: {m.content}" for m, _ in relevant_mems)
+            sys_instruction += f"\n\n=== RELEVANT USER MEMORIES ===\n{mem_text}"
+    except Exception:
+        pass
 
     if req.history:
         history_lines = []
@@ -201,10 +244,11 @@ async def chat_endpoint(req: ChatRequest):
             system_instruction=sys_instruction
         )
         response_text = response_obj.text if hasattr(response_obj, "text") else str(response_obj)
+        MEMORY_MANAGER.record_conversation_turn("assistant", response_text)
 
         await broadcast_event({
             "event_type": "chat.response",
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "task_id": None,
             "message": "Chat response generated.",
             "payload": {"response": response_text}
@@ -226,7 +270,7 @@ async def chat_endpoint(req: ChatRequest):
 
         await broadcast_event({
             "event_type": "chat.error",
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "task_id": None,
             "message": f"Chat error: {err_msg}",
             "payload": {"error": friendly_err}
@@ -241,7 +285,7 @@ async def chat_endpoint(req: ChatRequest):
 async def clear_chat_endpoint():
     await broadcast_event({
         "event_type": "chat.cleared",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": None,
         "message": "Chat history cleared.",
         "payload": {}
@@ -261,6 +305,26 @@ async def stop_task():
     agent_loop.stop_task()
     return {"status": "stopped"}
 
+@app.post("/api/task/respond_question")
+async def respond_question_endpoint(req: QuestionResponseRequest):
+    if not agent_loop:
+        raise HTTPException(status_code=500, detail="Agent loop not initialized.")
+    success = agent_loop.submit_user_response(req.response)
+    if not success:
+        raise HTTPException(status_code=400, detail="No active question waiting for response.")
+    return {"status": "success", "response": req.response}
+
+@app.get("/api/tasks")
+async def list_tasks_endpoint():
+    return task_manager.list_tasks()
+
+@app.get("/api/tasks/{task_id}")
+async def get_task_endpoint(task_id: str):
+    t = task_manager.get_task(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return t.to_dict()
+
 @app.get("/api/control/state")
 async def get_control_state():
     return {"control_state": takeover_manager.control_state}
@@ -277,7 +341,7 @@ async def take_control_endpoint():
     
     await broadcast_event({
         "event_type": "control.takeover_started",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": state_tracker.task_id,
         "message": "User took control. AI execution paused.",
         "payload": {
@@ -304,7 +368,7 @@ async def release_control_endpoint():
     state_tracker.takeover_active = False
     await broadcast_event({
         "event_type": "control.release_requested",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": state_tracker.task_id,
         "message": "User released control. Resuming AI execution...",
         "payload": {
@@ -330,7 +394,7 @@ async def update_scope_permission_api(scope: str, req: ScopeUpdate):
     # Broadcast configuration update to the UI
     await broadcast_event({
         "event_type": "permission.updated",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": state_tracker.task_id,
         "message": f"Global policy for scope '{scope}' updated to '{lvl}'.",
         "payload": {"policies": policy_manager.get_all_policies()}
@@ -350,7 +414,7 @@ async def update_app_permission_api(app_id: str, req: ScopeUpdate):
     policy_manager.update_app_policy(app_id, lvl)
     await broadcast_event({
         "event_type": "permission.updated",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": state_tracker.task_id,
         "message": f"App override policy for '{app_id}' updated to '{lvl}'.",
         "payload": {"policies": policy_manager.get_all_policies()}
@@ -362,7 +426,7 @@ async def delete_app_permission_api(app_id: str):
     policy_manager.delete_app_policy(app_id)
     await broadcast_event({
         "event_type": "permission.updated",
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": state_tracker.task_id,
         "message": f"App override policy for '{app_id}' deleted.",
         "payload": {"policies": policy_manager.get_all_policies()}
@@ -510,6 +574,218 @@ async def transcribe_endpoint(file: UploadFile = File(...)):
         return {"status": "success", "transcription": transcription}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# Phase 8: Memory & Context Endpoints
+# ============================================================================
+@app.get("/api/memory")
+async def list_memories_endpoint(type: Optional[str] = None):
+    mem_type = None
+    if type:
+        try:
+            mem_type = MemoryType(type)
+        except ValueError:
+            pass
+    return MEMORY_MANAGER.view_all_memories(mem_type)
+
+@app.post("/api/memory")
+async def create_or_update_memory_endpoint(req: MemoryCreateRequest):
+    try:
+        mem_type = MemoryType(req.memory_type)
+    except ValueError:
+        mem_type = MemoryType.PREFERENCE_MEMORY
+    item = MEMORY_MANAGER.add_memory(
+        memory_type=mem_type,
+        key=req.key,
+        content=req.content,
+        tags=req.tags or []
+    )
+    return {"status": "success", "memory": item.to_dict()}
+
+@app.delete("/api/memory/{memory_id}")
+async def delete_memory_endpoint(memory_id: str):
+    success = MEMORY_MANAGER.delete_memory(memory_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    return {"status": "deleted", "id": memory_id}
+
+@app.post("/api/memory/clear")
+async def clear_all_memories_endpoint():
+    MEMORY_MANAGER.clear_all()
+    return {"status": "cleared"}
+
+@app.post("/api/memory/search")
+async def search_memories_endpoint(req: MemorySearchRequest):
+    results = MEMORY_MANAGER.retrieve_relevant(req.query, limit=req.limit)
+    return [
+        {"memory": m.to_dict(), "relevance_score": score}
+        for m, score in results
+    ]
+
+# ============================================================================
+# Phase 6: Workspace & File Intelligence Endpoints
+# ============================================================================
+@app.get("/api/workspace/files")
+async def list_workspace_files_endpoint():
+    WORKSPACE_MANAGER.search_files("")
+    return [m.to_dict() for m in WORKSPACE_MANAGER.tracked_files.values()]
+
+@app.post("/api/workspace/upload")
+async def upload_workspace_file_endpoint(file: UploadFile = File(...)):
+    workspace_dir = WORKSPACE_MANAGER.workspace_root
+    os.makedirs(workspace_dir, exist_ok=True)
+    dest_path = os.path.join(workspace_dir, file.filename)
+    contents = await file.read()
+    with open(dest_path, "wb") as f:
+        f.write(contents)
+    meta = WORKSPACE_MANAGER.register_file(
+        dest_path,
+        origin=FileOrigin.USER_UPLOAD,
+        task_id=state_tracker.task_id
+    )
+    return {"status": "uploaded", "file": meta.to_dict() if meta else {}}
+
+@app.get("/api/workspace/search")
+async def search_workspace_files_endpoint(query: str = "", limit: int = 10):
+    results = WORKSPACE_MANAGER.search_files(query=query, max_results=limit)
+    return [
+        {"file": meta.to_dict(), "relevance_score": score}
+        for meta, score in results
+    ]
+
+# ============================================================================
+# Phase 5: Skills & Capability Registry Endpoints
+# ============================================================================
+@app.get("/api/skills")
+async def list_skills_endpoint():
+    registry = get_skill_registry()
+    return registry.list_skills()
+
+@app.post("/api/skills/{skill_name}/execute")
+async def execute_skill_endpoint(skill_name: str, req: SkillExecuteRequest):
+    registry = get_skill_registry()
+    skill = registry.get(skill_name)
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found.")
+    try:
+        result = await skill.execute(req.parameters)
+        return {
+            "status": "success" if result.success else "failed",
+            "result": {
+                "skill_name": result.skill_name,
+                "success": result.success,
+                "output": result.output,
+                "steps_executed": result.steps_executed,
+                "verification_details": result.verification_details,
+                "error": result.error
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# Phase 12: Specialist Delegation & KAIRO-AI Endpoints
+# ============================================================================
+@app.get("/api/specialists")
+async def list_specialists_endpoint():
+    return [
+        {
+            "name": s.name,
+            "specialist_type": s.specialist_type.value,
+            "description": s.description
+        }
+        for s in SPECIALIST_DELEGATOR._specialists.values()
+    ]
+
+@app.post("/api/specialists/delegate")
+async def delegate_specialist_endpoint(req: SpecialistDelegateRequest):
+    res = await SPECIALIST_DELEGATOR.delegate_task(req.task, req.context)
+    if not res:
+        return {"status": "no_specialist_found", "message": "No specialist capable of handling this task"}
+    return {
+        "status": "success" if res.success else "failed",
+        "specialist": res.specialist_name,
+        "type": res.specialist_type.value,
+        "output": res.output,
+        "verification_passed": res.verification_passed,
+        "code_artifacts": res.code_artifacts,
+        "error": res.error
+    }
+
+# ============================================================================
+# Phase 17: Observability & Diagnostics Endpoints
+# ============================================================================
+@app.get("/api/trace")
+async def get_execution_trace_endpoint():
+    if agent_loop and agent_loop.tracer:
+        return agent_loop.tracer.get_trace()
+    trace_path = "agent_execution_trace.json"
+    if os.path.exists(trace_path):
+        try:
+            import json
+            with open(trace_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"task_id": "none", "steps": [], "total_steps": 0}
+
+@app.get("/api/trace/summary")
+async def get_trace_summary_endpoint():
+    if agent_loop and agent_loop.tracer:
+        return agent_loop.tracer.export_diagnostic_summary()
+    return {"status": "no_active_trace"}
+
+# ============================================================================
+# Phase 19: System Metrics & Health Endpoint
+# ============================================================================
+@app.get("/api/system/metrics")
+async def get_system_metrics_endpoint():
+    mem_mb = MEMORY_MONITOR.get_current_memory_mb()
+    health = MEMORY_MONITOR.check_memory_health()
+    import psutil
+    cpu_percent = psutil.cpu_percent(interval=None)
+    cpu_count = psutil.cpu_count(logical=True)
+    return {
+        "status": "healthy",
+        "memory": {
+            "rss_mb": mem_mb,
+            "warning_threshold_mb": MEMORY_MONITOR.warning_threshold_mb,
+            "critical_threshold_mb": MEMORY_MONITOR.critical_threshold_mb,
+            "health_status": health["status"]
+        },
+        "system": {
+            "cpu_percent": cpu_percent,
+            "cpu_count": cpu_count,
+            "platform": sys.platform
+        },
+        "agent": {
+            "status": state_tracker.status,
+            "active_task_id": state_tracker.task_id,
+            "takeover_active": state_tracker.takeover_active,
+            "control_state": takeover_manager.control_state
+        }
+    }
+
+# ============================================================================
+# Phase 11: Multi-Model Catalog Endpoint
+# ============================================================================
+@app.get("/api/models/catalog")
+async def get_models_catalog_endpoint():
+    catalog = []
+    for name, (spec, prov) in model_router._models.items():
+        catalog.append({
+            "name": spec.name,
+            "provider_type": spec.provider_type,
+            "capabilities": [c.value for c in spec.capabilities],
+            "cost_tier": spec.cost_tier,
+            "speed_tier": spec.speed_tier,
+            "is_available": spec.is_available,
+            "failure_count": spec.failure_count
+        })
+    return {
+        "models": catalog,
+        "active_model": getattr(current_model_provider, "model_name", "unknown")
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

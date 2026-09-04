@@ -23,7 +23,7 @@ class StateTracker:
         self.max_attempts = 50
 
     def reset(self, task: str):
-        now_str = datetime.datetime.utcnow().isoformat() + "Z"
+        now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.status = "queued"
         self.current_task = task
         self.task_id = str(uuid.uuid4())
@@ -42,13 +42,13 @@ class StateTracker:
 
     def update_status(self, status: str):
         self.status = status
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if status in ["completed", "failed", "cancelled", "stopped"]:
             self.completed_at = self.updated_at
 
     def update_computer_state(self, computer_state: Optional[Dict[str, Any]]):
         self.computer_state = computer_state
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def add_action_history(
         self, 
@@ -59,15 +59,23 @@ class StateTracker:
         duration_ms: int = 0, 
         output: Optional[str] = None,
         obs_before: Optional[Dict[str, Any]] = None,
-        obs_after: Optional[Dict[str, Any]] = None
+        obs_after: Optional[Dict[str, Any]] = None,
+        action_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        verification_status: Optional[str] = None
     ):
-        clean_params = parameters.copy()
+        clean_params = parameters.copy() if parameters else {}
         history_item: Dict[str, Any] = {
+            "action_id": action_id or f"act_{uuid.uuid4().hex[:12]}",
+            "task_id": task_id or self.task_id or "unknown_task",
+            "action_type": action_name,
             "action": action_name,
+            "arguments": clean_params,
             "parameters": clean_params,
             "status": status,
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-            "duration_ms": duration_ms
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "duration_ms": duration_ms,
+            "verification_status": verification_status or ("verified_success" if status == "completed" else "verification_failed" if status == "failed" else "unverified")
         }
         if error_message:
             history_item["error"] = error_message
@@ -91,7 +99,7 @@ class StateTracker:
         self.action_history.append(history_item)
         if len(self.action_history) > 50:
             self.action_history = self.action_history[-50:]
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def set_steps(self, steps_descriptions: List[str]):
         self.steps = []
@@ -102,12 +110,12 @@ class StateTracker:
                 "status": "pending",
                 "tool_call": None
             })
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     # Plan Mutation Helpers (Requirement 6)
     def set_structured_steps(self, steps: List[Dict[str, Any]]):
         self.steps = steps
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def add_step(self, step: Dict[str, Any], index: Optional[int] = None):
         if "step_id" not in step and "id" in step:
@@ -121,17 +129,17 @@ class StateTracker:
             self.steps.append(step)
         else:
             self.steps.insert(index, step)
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def remove_step(self, step_id: str):
         self.steps = [s for s in self.steps if s.get("step_id") != step_id and s.get("id") != step_id]
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def update_step_status(self, step_id: str, status: str):
         for step in self.steps:
             if step.get("step_id") == step_id or step.get("id") == step_id:
                 step["status"] = status
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def start_step(self, step_id: str, tool_call: Optional[Dict[str, Any]] = None):
         self.active_step_id = step_id
@@ -139,25 +147,25 @@ class StateTracker:
             if step.get("step_id") == step_id or step.get("id") == step_id:
                 step["status"] = "running"
                 step["tool_call"] = tool_call
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def complete_step(self, step_id: str):
         for step in self.steps:
             if step.get("step_id") == step_id or step.get("id") == step_id:
                 step["status"] = "completed"
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def fail_step(self, step_id: str):
         for step in self.steps:
             if step.get("step_id") == step_id or step.get("id") == step_id:
                 step["status"] = "failed"
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def cancel_all_steps(self):
         for step in self.steps:
             if step["status"] in ["pending", "running"]:
                 step["status"] = "cancelled"
-        self.updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+        self.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         return {

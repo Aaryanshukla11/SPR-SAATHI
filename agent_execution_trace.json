@@ -1,6 +1,7 @@
 {
-  "task_goal": "Text-only fallback task",
+  "task_id": "task_8f3b87ef0261",
+  "task_goal": "Open Notepad",
   "total_steps": 0,
-  "duration_seconds": 0.95,
+  "duration_seconds": 0.45,
   "steps": []
 }

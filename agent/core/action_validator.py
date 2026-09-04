@@ -13,6 +13,7 @@ def validate_action(action_name: str, arguments: Dict[str, Any]) -> Tuple[bool, 
         "mouse_down",
         "mouse_up",
         "mouse_drag",
+        "mouse_scroll",
         "draw_line",
         "draw_polyline",
         "draw_rectangle",
@@ -92,6 +93,19 @@ def validate_action(action_name: str, arguments: Dict[str, Any]) -> Tuple[bool, 
             
         if not isinstance(duration, int) or duration < 0 or duration > 10000:
             return False, f"Drag duration must be an integer between 0 and 10000 ms."
+
+    elif action_name == "mouse_scroll":
+        clicks = arguments.get("clicks", 1)
+        direction = arguments.get("direction", "down")
+        if not isinstance(clicks, int) or clicks < -100 or clicks > 100:
+            return False, "Clicks must be an integer between -100 and 100."
+        if str(direction).lower().strip() not in ["up", "down", "left", "right"]:
+            return False, f"Unsupported scroll direction: '{direction}'. Must be 'up', 'down', 'left', or 'right'."
+        if "x" in arguments and "y" in arguments:
+            x = arguments.get("x")
+            y = arguments.get("y")
+            err = validate_coords(x, y, "x", "y")
+            if err: return False, err
 
     # KEYBOARD ACTIONS
     elif action_name == "keyboard_type":

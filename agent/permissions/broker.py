@@ -74,7 +74,7 @@ class PermissionBroker:
 
     def log_audit(self, task_id: str, request_id: str, scope: str, resource: str, action: str, decision: str, source: str):
         log_item = {
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "task_id": task_id,
             "request_id": request_id,
             "scope": scope,

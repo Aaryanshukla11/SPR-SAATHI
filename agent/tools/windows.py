@@ -1,5 +1,6 @@
 import subprocess
 import os
+import asyncio
 from typing import Dict, Any
 from .base import BaseTool
 from agent.core import win32_utils
@@ -62,12 +63,15 @@ class LaunchAppTool(BaseTool):
                     subprocess.Popen(f'cmd.exe /c start "" "{expanded_name}"', shell=True)
             else:
                 subprocess.Popen(f'cmd.exe /c start "" "{expanded_name}"', shell=True)
-            import time
-            time.sleep(2.0)
-            msg = f"Application '{app_name}' launched successfully."
+            ready_info = await win32_utils.wait_for_application_ready_async(clean_name, timeout=5.0)
+            if ready_info.get("ready"):
+                msg = f"Application '{app_name}' launched and confirmed ready (Window: '{ready_info.get('title')}', Process: '{ready_info.get('process')}')."
+            else:
+                msg = f"Application '{app_name}' launch command dispatched (Readiness detection ongoing)."
             return {
                 "call_id": "",
                 "success": True,
+                "readiness": ready_info,
                 "output": msg,
                 "error": None
             }
@@ -114,6 +118,8 @@ class ListWindowsTool(BaseTool):
             return {
                 "call_id": "",
                 "success": True,
+                "windows": windows,
+                "count": len(windows),
                 "output": json.dumps(windows),
                 "error": None
             }
@@ -190,17 +196,22 @@ class FocusWindowTool(BaseTool):
                 }
                 
             focused = win32_utils.focus_window(target_hwnd)
-            if focused:
+            fg_verified = win32_utils.verify_foreground_state(target_hwnd)
+            if focused or fg_verified:
                 return {
                     "call_id": "",
                     "success": True,
-                    "output": f"Successfully focused window: '{matched_title}'",
+                    "target_hwnd": target_hwnd,
+                    "foreground_verified": fg_verified,
+                    "output": f"Successfully focused window: '{matched_title}' (Foreground Verified: {fg_verified})",
                     "error": None
                 }
             else:
                 return {
                     "call_id": "",
                     "success": False,
+                    "target_hwnd": target_hwnd,
+                    "foreground_verified": False,
                     "output": "",
                     "error": f"Failed to focus window: '{matched_title}' (blocked by Windows API)."
                 }

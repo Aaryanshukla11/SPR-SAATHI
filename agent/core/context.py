@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Tuple, Optional
 import json
+import re
 from agent.tools import get_all_tools
 from agent.core import win32_utils
 
@@ -108,6 +109,25 @@ def build_observation_summary(observation: Dict[str, Any]) -> str:
         lines.append(f"Desktop Windows: {', '.join(named_windows[:15])}")
     else:
         lines.append("Desktop Windows: None")
+
+    # Browser State
+    browser = observation.get("browser_state")
+    if browser and browser.get("is_browser"):
+        lines.append(f"Active Browser: {browser.get('browser_name')} | Tab: \"{browser.get('tab_title')}\"")
+
+    # Top Child Controls in Active Window
+    hierarchy = observation.get("window_hierarchy", [])
+    if hierarchy:
+        named_ctrls = []
+        for c in hierarchy[:10]:
+            c_text = (c.get("text") or "").strip()
+            c_class = c.get("class_name", "")
+            if c_text:
+                named_ctrls.append(f"{c_class}(\"{c_text[:20]}\")")
+            elif c_class:
+                named_ctrls.append(f"{c_class}")
+        if named_ctrls:
+            lines.append(f"Window UI Controls: {', '.join(named_ctrls)}")
     
     return "\n".join(lines)
 
@@ -166,6 +186,121 @@ def build_goal_and_plan_summary(goal: str, plan: List[Dict[str, Any]]) -> str:
     plan_str = "\n".join(plan_lines) if plan_lines else "No checklist"
     return f"Goal: {goal}\nPlan:\n{plan_str}"
 
+def sanitize_sensitive_data(text: str) -> str:
+    """
+    Phase 9 Privacy Boundary: Redacts secret tokens, API keys, passwords,
+    and private bearer tokens before sending prompt context to AI models.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+
+    # Common API key and bearer token patterns
+    sanitized = re.sub(r"sk-[a-zA-Z0-9_\-]{20,}", "[REDACTED_API_KEY]", text)
+    sanitized = re.sub(r"AIza[0-9A-Za-z\-_]{35}", "[REDACTED_GOOGLE_KEY]", sanitized)
+    sanitized = re.sub(r"ghp_[a-zA-Z0-9]{36}", "[REDACTED_GITHUB_TOKEN]", sanitized)
+    sanitized = re.sub(r"(?i)(bearer\s+)[a-zA-Z0-9_\-\.]{25,}", r"\1[REDACTED_TOKEN]", sanitized)
+    sanitized = re.sub(r"(?i)(password|secret|api_key|token)\s*([:=])\s*['\"]?[^\s'\",]{8,}['\"]?", r"\1\2 [REDACTED]", sanitized)
+    return sanitized
+
+
+class ContextBuilder:
+    """
+    Phase 9: Context Builder Engine.
+    
+    Synthesizes and selects relevant context across 9 sources:
+    1. User request & overarching goal
+    2. Structured plan checklist
+    3. Multimodal visual & textual desktop observation
+    4. Relevant memories (retrieved from MemoryManager)
+    5. Relevant workspace files (retrieved from WorkspaceManager)
+    6. Compact action history with large-history sliding window
+    7. Tool catalog
+    8. Active browser and window controls
+    9. Privacy boundaries sanitization
+    """
+
+    def __init__(self):
+        pass
+
+    def build_context(
+        self,
+        goal: str,
+        plan: List[Dict[str, Any]],
+        observation: Dict[str, Any],
+        recent_history: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        include_memories: bool = True,
+        include_workspace_files: bool = True
+    ) -> Tuple[str, str]:
+        # 1. System Prompt
+        sys_prompt = build_system_instruction()
+
+        # 2. Tool Catalog
+        tools_catalog = build_tools_catalog()
+
+        # 3. Visual & Desktop Observation
+        obs_summary = build_observation_summary(observation)
+
+        # 4. Action History with sliding window for large histories
+        hist_summary = build_history_summary(recent_history, max_items=6)
+
+        # 5. Goal & Plan Checklist
+        goal_plan = build_goal_and_plan_summary(goal, plan)
+
+        sections = [
+            f"=== GOAL & PLAN ===\n{goal_plan}",
+            f"=== CURRENT OBSERVATION ===\n{obs_summary}",
+            f"=== RECENT ACTION HISTORY ===\n{hist_summary}"
+        ]
+
+        # 6. Relevant Memories
+        if include_memories:
+            try:
+                from agent.core.memory import MEMORY_MANAGER
+                mem_matches = MEMORY_MANAGER.retrieve_relevant(goal, limit=3)
+                if mem_matches:
+                    mem_lines = [f"- [{m.key}]: {m.content}" for m, _ in mem_matches]
+                    sections.append(f"=== RELEVANT USER MEMORIES ===\n" + "\n".join(mem_lines))
+            except Exception:
+                pass
+
+        # 7. Relevant Workspace Files
+        if include_workspace_files:
+            try:
+                from agent.core.workspace import WORKSPACE_MANAGER
+                file_matches = WORKSPACE_MANAGER.search_files(goal, max_results=3)
+                if file_matches:
+                    file_lines = [f"- {meta.filename} ({meta.file_type.value}, {meta.size_bytes}B)" for meta, _ in file_matches]
+                    sections.append(f"=== RELEVANT WORKSPACE FILES ===\n" + "\n".join(file_lines))
+            except Exception:
+                pass
+
+        # 8. Conversation History (if present)
+        if conversation_history:
+            conv_lines = []
+            for turn in conversation_history[-4:]:
+                r = turn.get("role", "user")
+                m = turn.get("message", "")
+                conv_lines.append(f"{r.capitalize()}: {m}")
+            if conv_lines:
+                sections.append("=== RECENT CONVERSATION ===\n" + "\n".join(conv_lines))
+
+        # 9. Tools Catalog
+        sections.append(f"=== TOOLS CATALOG ===\n{tools_catalog}")
+        sections.append("Inspect the current observation/screen and decide the next action to execute (use 'tool_call' with 'tool_name' and 'arguments', or 'final' if completed). Return JSON only.")
+
+        user_content = "\n\n".join(sections)
+
+        # Enforce Phase 9 Privacy Boundaries: strip any accidental credentials
+        clean_user_content = sanitize_sensitive_data(user_content)
+
+        return sys_prompt, clean_user_content
+
+
+# Global singleton instance
+CONTEXT_BUILDER = ContextBuilder()
+
+
 def build_compact_context(
     goal: str,
     plan: List[Dict[str, Any]],
@@ -173,19 +308,12 @@ def build_compact_context(
     recent_history: List[Dict[str, Any]]
 ) -> Tuple[str, str]:
     """
-    Constructs the optimized system prompt and user prompt payload.
+    Constructs the optimized system prompt and user prompt payload via ContextBuilder.
     """
-    sys_prompt = build_system_instruction()
-    tools_catalog = build_tools_catalog()
-    obs_summary = build_observation_summary(observation)
-    hist_summary = build_history_summary(recent_history)
-    goal_plan = build_goal_and_plan_summary(goal, plan)
-
-    user_content = (
-        f"=== GOAL & PLAN ===\n{goal_plan}\n\n"
-        f"=== CURRENT OBSERVATION ===\n{obs_summary}\n\n"
-        f"=== RECENT ACTION HISTORY ===\n{hist_summary}\n\n"
-        f"=== TOOLS CATALOG ===\n{tools_catalog}\n\n"
-        "Inspect the current observation/screen and decide the next action to execute (use 'tool_call' with 'tool_name' and 'arguments', or 'final' if completed). Return JSON only."
+    return CONTEXT_BUILDER.build_context(
+        goal=goal,
+        plan=plan,
+        observation=observation,
+        recent_history=recent_history
     )
-    return sys_prompt, user_content
+

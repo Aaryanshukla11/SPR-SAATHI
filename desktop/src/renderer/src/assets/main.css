@@ -1519,3 +1519,149 @@ select option,
 .chat-typing-indicator span:nth-child(3) {
   animation-delay: 0.4s;
 }
+
+/* ==========================================================================
+   Header Live Metrics Chip (Obsidian Minimalism)
+   ========================================================================== */
+.header-metrics-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #a1a1aa;
+}
+
+.metric-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.metric-val {
+  color: #f4f4f5;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-weight: 600;
+}
+
+.metric-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: #34d399;
+}
+
+.metric-dot.alert {
+  background-color: #fbbf24;
+}
+
+/* ==========================================================================
+   Workspace & Memory Panes
+   ========================================================================== */
+.subnav-pills {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-glass);
+  padding: 3px;
+  border-radius: 8px;
+}
+
+.subnav-btn {
+  flex: 1;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.subnav-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.subnav-btn:hover:not(.active) {
+  color: #d4d4d8;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.memory-item-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.2s ease;
+}
+
+.memory-item-card:hover {
+  border-color: var(--border-glass-hover);
+}
+
+.memory-type-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(167, 139, 250, 0.15);
+  color: #c084fc;
+}
+
+.tag-chip {
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #a1a1aa;
+}
+
+.skill-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.skill-card:hover {
+  border-color: rgba(56, 189, 248, 0.3);
+  transform: translateY(-1px);
+}
+
+.specialist-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+
+.specialist-card.kairo {
+  border-color: rgba(167, 139, 250, 0.3);
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.05) 0%, rgba(20, 20, 24, 0.9) 100%);
+}
+
+.specialist-card:hover {
+  border-color: var(--border-glass-hover);
+}
+

@@ -33,7 +33,7 @@ async def run_phase3_integration():
         from agent.models.api import ApiModelProvider
         model = ApiModelProvider("Gemini 3.5 Flash")
         
-        async def mock_decide_action(goal, plan, observation, recent_history):
+        async def mock_decide_action(goal, plan, observation, recent_history, **kwargs):
             return {"decision_type": "tool_call", "tool_name": "launch_app", "arguments": {"app_name": "notepad.exe"}}
             
         model.decide_action = mock_decide_action
@@ -59,17 +59,18 @@ async def run_phase3_integration():
         
         loop.start_task("Open Notepad")
         
-        # Poll for task failure
+        # Poll for task termination / pause
         max_wait = 5.0
         elapsed = 0.0
-        while tracker.status not in ["completed", "failed", "cancelled"] and elapsed < max_wait:
+        while tracker.status not in ["completed", "failed", "cancelled", "paused"] and elapsed < max_wait:
             await asyncio.sleep(0.2)
             elapsed += 0.2
             
         print(f"Notepad task status: {tracker.status}, Error: {tracker.error_message}")
-        assert tracker.status == "failed"
+        assert tracker.status in ["failed", "paused"]
         assert any("Permission denied" in (a.get("error") or "") for a in tracker.action_history)
         print("Notepad launch blocked successfully!")
+        loop.stop_task()
 
         # ----------------------------------------------------
         # TEST C: PowerShell Category Block (PowerShell -> DENY, Terminal -> ALLOW)
@@ -142,6 +143,12 @@ async def run_phase3_integration():
     finally:
         if os.path.exists(config_path):
             os.remove(config_path)
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_phase3_permissions_integration():
+    await run_phase3_integration()
 
 if __name__ == "__main__":
     asyncio.run(run_phase3_integration())

@@ -1,0 +1,475 @@
+{
+  "version": "1.0",
+  "enabled": true,
+  "conversations": [
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:43:41.004401+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:43:41.009846+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:43:41.043168+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:43:41.049784+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:43:41.084851+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:43:41.090090+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:43:55.918894+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:43:55.927589+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:43:55.962594+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:43:55.970907+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:43:56.006509+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:43:56.011991+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:45:35.187236+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:45:35.198264+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:45:35.250264+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:45:35.256831+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:45:35.288683+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:45:35.294381+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:46:57.289604+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:46:57.300105+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:46:57.326795+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:46:57.333047+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:46:57.365213+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:46:57.372302+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:48:37.928788+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:48:37.938182+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:48:37.976736+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:48:37.987053+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:48:38.029152+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:48:38.034972+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:50:04.967708+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:50:04.975913+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:50:05.001651+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:50:05.009852+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:50:05.044229+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:50:05.051294+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:52:39.954531+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:52:39.966058+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:52:40.007737+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:52:40.014700+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:52:40.045938+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:52:40.052947+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:53:58.659624+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:53:58.666699+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:53:58.699156+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:53:58.706458+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:53:58.742249+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:53:58.749812+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:55:09.220130+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:55:09.227229+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:55:09.261746+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:55:09.271077+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:55:09.305758+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:55:09.314195+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-03T20:58:27.976539+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-03T20:58:27.989729+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-03T20:58:28.022850+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-03T20:58:28.030229+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-03T20:58:28.060384+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-03T20:58:28.066221+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T05:01:38.213763+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T05:01:38.219760+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T05:01:38.240447+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T05:01:38.247255+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T05:01:38.276863+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T05:01:38.283194+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T05:03:28.759159+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T05:03:28.764655+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T05:03:28.785105+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T05:03:28.790706+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T05:03:28.816068+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T05:03:28.822303+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T05:19:30.298243+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T05:19:30.305595+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T05:19:30.326806+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T05:19:30.333062+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T05:19:30.364151+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T05:19:30.370640+00:00",
+      "session_id": "default"
+    }
+  ],
+  "memories": {}
+}

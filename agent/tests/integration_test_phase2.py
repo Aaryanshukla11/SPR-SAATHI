@@ -23,7 +23,7 @@ async def run_smoke_test():
     from agent.models.api import ApiModelProvider
     model = ApiModelProvider("Gemini 3.5 Flash")
     
-    async def mock_decide_action(goal, plan, observation, recent_history):
+    async def mock_decide_action(goal, plan, observation, recent_history, **kwargs):
         successful_drags = [a for a in recent_history if a.get("action") == "mouse_drag" and a.get("status") == "completed"]
         launched = any(a.get("action") == "launch_app" and a.get("status") == "completed" for a in recent_history)
         focused = any(a.get("action") == "focus_window" and a.get("status") == "completed" for a in recent_history)
@@ -169,9 +169,15 @@ async def run_smoke_test():
     else:
         print("Paint window not found during cleanup.")
         
-    print("\n====================================================")
+    print("====================================================")
     print("PHASE 2 INTEGRATION TEST SUCCESSFUL!")
     print("====================================================")
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_phase2_paint_drawing_smoke():
+    await run_smoke_test()
 
 if __name__ == "__main__":
     asyncio.run(run_smoke_test())

@@ -23,7 +23,7 @@ async def run_integration_test():
     tracker = StateTracker()
     mock_provider = ApiModelProvider(model_name="Gemini 3.5 Flash")
     
-    async def mock_decide_action(goal, plan, observation, recent_history):
+    async def mock_decide_action(goal, plan, observation, recent_history, **kwargs):
         launched = any(a.get("action") == "launch_app" for a in recent_history if a.get("status") == "completed")
         focused = any(a.get("action") == "focus_window" for a in recent_history if a.get("status") == "completed")
         typed = any(a.get("action") == "keyboard_type" and "hello" in str(a.get("parameters", {}).get("text")).lower() for a in recent_history if a.get("status") == "completed")
@@ -135,6 +135,12 @@ async def run_integration_test():
     print("====================================================")
     print("INTEGRATION TEST SUCCESSFUL!")
     print("====================================================")
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_integration_notepad_flow():
+    await run_integration_test()
 
 if __name__ == "__main__":
     asyncio.run(run_integration_test())

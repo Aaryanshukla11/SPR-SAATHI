@@ -122,5 +122,11 @@ async def run_takeover_integration():
         if os.path.exists(config_path):
             os.remove(config_path)
 
+import pytest
+
+@pytest.mark.asyncio
+async def test_takeover_integration_flow():
+    await run_takeover_integration()
+
 if __name__ == "__main__":
     asyncio.run(run_takeover_integration())

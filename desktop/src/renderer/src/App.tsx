@@ -79,11 +79,64 @@ function App(): React.JSX.Element {
   const [port, setPort] = useState<number | null>(null)
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'unavailable'>('connecting')
   const [reconnectAttempts, setReconnectAttempts] = useState(0)
-  const [activeTab, setActiveTab] = useState<'control' | 'security' | 'settings' | 'logs'>('control')
+  const [activeTab, setActiveTab] = useState<'control' | 'security' | 'workspace' | 'skills' | 'settings' | 'logs'>('control')
   const [showLoopActivity, setShowLoopActivity] = useState(false)
   const [takeoverLoading, setTakeoverLoading] = useState(false)
   const [installedApps, setInstalledApps] = useState<{name: string, version: string, publisher: string, key: string}[]>([])
   const [searchQuery, setSearchQuery] = useState('')
+
+  // System Health Metrics (Phase 19)
+  const [systemMetrics, setSystemMetrics] = useState<{
+    status?: string
+    memory?: { rss_mb: number; vms_mb?: number }
+    system?: { cpu_percent: number; memory_percent?: number }
+    agent?: { status: string; task_id?: string }
+  } | null>(null)
+
+  // Workspace & Memory State (Phases 6 & 8)
+  const [workspaceSubTab, setWorkspaceSubTab] = useState<'memory' | 'files'>('memory')
+  const [memoryItems, setMemoryItems] = useState<Array<{
+    id: string
+    key: string
+    content: string
+    memory_type: string
+    tags: string[]
+    created_at?: string
+  }>>([])
+  const [memoryQuery, setMemoryQuery] = useState('')
+  const [newMemKey, setNewMemKey] = useState('')
+  const [newMemContent, setNewMemContent] = useState('')
+  const [newMemType, setNewMemType] = useState('preference_memory')
+  const [newMemTags, setNewMemTags] = useState('user, preference')
+  const [memoryMessage, setMemoryMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
+  const [workspaceFiles, setWorkspaceFiles] = useState<Array<{
+    file_id: string
+    path: string
+    filename: string
+    size_bytes: number
+    mime_type?: string
+    task_id?: string
+    created_at?: string
+  }>>([])
+  const [workspaceQuery, setWorkspaceQuery] = useState('')
+
+  // Skills & Specialists State (Phases 5 & 12)
+  const [skillsSubTab, setSkillsSubTab] = useState<'skills' | 'specialists'>('skills')
+  const [registeredSkills, setRegisteredSkills] = useState<Array<{
+    name: string
+    description: string
+    parameters?: any
+  }>>([])
+  const [specialistsList, setSpecialistsList] = useState<Array<{
+    name: string
+    type: string
+    capabilities: string[]
+    description?: string
+  }>>([])
+  const [specialistTaskInput, setSpecialistTaskInput] = useState('')
+  const [specialistSelected, setSpecialistSelected] = useState('kairo_coding')
+  const [specialistLoading, setSpecialistLoading] = useState(false)
+  const [specialistResult, setSpecialistResult] = useState<any | null>(null)
 
   // Voice Input State
   const [voiceState, setVoiceState] = useState<'idle' | 'listening' | 'processing' | 'transcribing' | 'ready' | 'error'>('idle')
@@ -1130,9 +1183,139 @@ function App(): React.JSX.Element {
     }
   }
 
+  const fetchSystemMetrics = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/system/metrics`)
+      if (res.ok) {
+        const data = await res.json()
+        setSystemMetrics(data)
+      }
+    } catch (e) {}
+  }
+
+  const fetchMemories = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/memory`)
+      if (res.ok) {
+        const data = await res.json()
+        setMemoryItems(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error('Fetch memory error:', e)
+    }
+  }
+
+  const fetchWorkspaceFiles = async () => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/workspace/files`)
+      if (res.ok) {
+        const data = await res.json()
+        setWorkspaceFiles(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error('Fetch workspace files error:', e)
+    }
+  }
+
+  const fetchSkillsAndSpecialists = async () => {
+    if (port === null) return
+    try {
+      const [skillsRes, specRes] = await Promise.all([
+        fetch(`http://127.0.0.1:${port}/api/skills`),
+        fetch(`http://127.0.0.1:${port}/api/specialists`)
+      ])
+      if (skillsRes.ok) {
+        const data = await skillsRes.json()
+        setRegisteredSkills(Array.isArray(data) ? data : [])
+      }
+      if (specRes.ok) {
+        const data = await specRes.json()
+        setSpecialistsList(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error('Fetch skills/specialists error:', e)
+    }
+  }
+
+  const handleCreateMemory = async () => {
+    if (!newMemKey.trim() || !newMemContent.trim() || port === null) return
+    try {
+      const tags = newMemTags.split(',').map(t => t.trim()).filter(Boolean)
+      const res = await fetch(`http://127.0.0.1:${port}/api/memory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: newMemKey.trim(),
+          content: newMemContent.trim(),
+          memory_type: newMemType,
+          tags
+        })
+      })
+      if (res.ok) {
+        setNewMemKey('')
+        setNewMemContent('')
+        setMemoryMessage({ type: 'success', text: 'Memory saved successfully!' })
+        fetchMemories()
+      } else {
+        setMemoryMessage({ type: 'error', text: 'Failed to save memory item.' })
+      }
+    } catch (e) {
+      setMemoryMessage({ type: 'error', text: `Network error: ${e}` })
+    }
+  }
+
+  const handleDeleteMemory = async (memId: string) => {
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/memory/${memId}`, { method: 'DELETE' })
+      if (res.ok) {
+        fetchMemories()
+      }
+    } catch (e) {
+      console.error('Delete memory error:', e)
+    }
+  }
+
+  const handleDelegateSpecialist = async () => {
+    if (!specialistTaskInput.trim() || port === null || specialistLoading) return
+    setSpecialistLoading(true)
+    setSpecialistResult(null)
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/specialists/delegate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: specialistTaskInput.trim(),
+          specialist_name: specialistSelected
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setSpecialistResult(data)
+      } else {
+        const err = await res.json()
+        setSpecialistResult({ status: 'failed', error: err.detail || 'Delegation failed.' })
+      }
+    } catch (e) {
+      setSpecialistResult({ status: 'failed', error: String(e) })
+    } finally {
+      setSpecialistLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchConfiguredKeys()
     fetchOllamaModels()
+    fetchSystemMetrics()
+  }, [port])
+
+  useEffect(() => {
+    if (port === null) return
+    const metricsInterval = setInterval(fetchSystemMetrics, 6000)
+    return () => clearInterval(metricsInterval)
   }, [port])
 
   useEffect(() => {
@@ -1140,6 +1323,12 @@ function App(): React.JSX.Element {
       fetchOllamaModels()
       fetchConfiguredKeys()
       setManagerMessage(null)
+    } else if (activeTab === 'workspace') {
+      fetchMemories()
+      fetchWorkspaceFiles()
+      setMemoryMessage(null)
+    } else if (activeTab === 'skills') {
+      fetchSkillsAndSpecialists()
     }
   }, [activeTab, port])
 
@@ -1257,6 +1446,19 @@ function App(): React.JSX.Element {
             </button>
           </div>
 
+          {/* Real-time System Metrics Indicator */}
+          {systemMetrics?.system && (
+            <div className="header-metrics-chip" title="Live CPU and Agent Memory Usage">
+              <span className="metric-item">
+                <span className={`metric-dot ${systemMetrics.system.cpu_percent > 80 ? 'alert' : ''}`}></span>
+                CPU <span className="metric-val">{Math.round(systemMetrics.system.cpu_percent)}%</span>
+              </span>
+              <span className="metric-item">
+                RAM <span className="metric-val">{Math.round(systemMetrics.memory?.rss_mb || 0)}MB</span>
+              </span>
+            </div>
+          )}
+
           {backendStatus === 'connected' ? (
             <div className={`header-status connected ${appMode === 'chat' ? 'chat-mode' : status}`}>
               <span>{appMode === 'chat' ? (chatLoading ? 'Thinking...' : 'Chat Ready') : status.replace('_', ' ')}</span>
@@ -1305,6 +1507,30 @@ function App(): React.JSX.Element {
             </svg>
           </span>
           <span className="tab-label">Security & Apps</span>
+        </button>
+        <button 
+          className={`tab-button ${activeTab === 'workspace' ? 'active' : ''}`}
+          onClick={() => setActiveTab('workspace')}
+          title="Memory & Workspace Storage"
+        >
+          <span className="tab-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </span>
+          <span className="tab-label">Memory & Files</span>
+        </button>
+        <button 
+          className={`tab-button ${activeTab === 'skills' ? 'active' : ''}`}
+          onClick={() => setActiveTab('skills')}
+          title="Skills & AI Specialists"
+        >
+          <span className="tab-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+            </svg>
+          </span>
+          <span className="tab-label">Skills & AI</span>
         </button>
         <button 
           className={`tab-button ${activeTab === 'settings' ? 'active' : ''}`}
@@ -1856,6 +2082,310 @@ function App(): React.JSX.Element {
               </section>
             </div>
           </>
+        ) : activeTab === 'workspace' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
+            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Workspace & Persistent Memory</div>
+              <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Manage agent knowledge, learned user preferences, and sandboxed workspace files</div>
+            </div>
+
+            <div className="subnav-pills">
+              <button 
+                className={`subnav-btn ${workspaceSubTab === 'memory' ? 'active' : ''}`}
+                onClick={() => setWorkspaceSubTab('memory')}
+              >
+                🧠 Persistent Memory ({memoryItems.length})
+              </button>
+              <button 
+                className={`subnav-btn ${workspaceSubTab === 'files' ? 'active' : ''}`}
+                onClick={() => setWorkspaceSubTab('files')}
+              >
+                📁 Workspace Files ({workspaceFiles.length})
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {memoryMessage && (
+                <div style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '11.5px',
+                  background: memoryMessage.type === 'success' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                  color: memoryMessage.type === 'success' ? '#34d399' : '#f87171',
+                  border: `1px solid ${memoryMessage.type === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
+                }}>
+                  {memoryMessage.text}
+                </div>
+              )}
+
+              {workspaceSubTab === 'memory' ? (
+                <>
+                  {/* Add New Memory Card */}
+                  <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glass)', borderRadius: '10px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ fontSize: '11.5px', fontWeight: 600, color: '#e4e4e7' }}>Add Memory Note / Preference</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                      <input 
+                        type="text"
+                        placeholder="Memory key (e.g. coding_style)"
+                        value={newMemKey}
+                        onChange={(e) => setNewMemKey(e.target.value)}
+                        style={{ padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#fff', fontSize: '11px', outline: 'none' }}
+                      />
+                      <select 
+                        value={newMemType}
+                        onChange={(e) => setNewMemType(e.target.value)}
+                        style={{ padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#c084fc', fontSize: '11px', outline: 'none' }}
+                      >
+                        <option value="preference_memory">Preference Memory</option>
+                        <option value="context_memory">Context Memory</option>
+                        <option value="instruction_memory">Instruction Memory</option>
+                        <option value="episodic_memory">Episodic Memory</option>
+                      </select>
+                    </div>
+                    <textarea 
+                      placeholder="Memory content (e.g. User prefers Python with strict typing and pytest fixtures)"
+                      value={newMemContent}
+                      onChange={(e) => setNewMemContent(e.target.value)}
+                      rows={2}
+                      style={{ padding: '8px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#fff', fontSize: '11.5px', outline: 'none', resize: 'vertical' }}
+                    />
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input 
+                        type="text"
+                        placeholder="Tags comma-separated (e.g. style, python)"
+                        value={newMemTags}
+                        onChange={(e) => setNewMemTags(e.target.value)}
+                        style={{ flex: 1, padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#fff', fontSize: '11px', outline: 'none' }}
+                      />
+                      <button 
+                        className="btn btn-primary"
+                        onClick={handleCreateMemory}
+                        style={{ padding: '6px 14px', fontSize: '11px', fontWeight: 600, borderRadius: '6px' }}
+                      >
+                        Save Memory
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Search Bar */}
+                  <input 
+                    type="text"
+                    placeholder="Search memories by keyword..."
+                    value={memoryQuery}
+                    onChange={(e) => setMemoryQuery(e.target.value)}
+                    style={{ padding: '7px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#fff', fontSize: '11.5px', outline: 'none' }}
+                  />
+
+                  {/* Memories List */}
+                  {memoryItems.filter(m => !memoryQuery || m.key.toLowerCase().includes(memoryQuery.toLowerCase()) || m.content.toLowerCase().includes(memoryQuery.toLowerCase())).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '24px', fontSize: '11px', color: '#64748b' }}>
+                      No persistent memories stored yet. Add memories above or let the agent learn from your tasks.
+                    </div>
+                  ) : (
+                    memoryItems
+                      .filter(m => !memoryQuery || m.key.toLowerCase().includes(memoryQuery.toLowerCase()) || m.content.toLowerCase().includes(memoryQuery.toLowerCase()))
+                      .map((mem) => (
+                        <div key={mem.id} className="memory-item-card">
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontWeight: 600, fontSize: '12px', color: '#ffffff' }}>{mem.key}</span>
+                              <span className="memory-type-badge">{mem.memory_type.replace('_', ' ')}</span>
+                            </div>
+                            <button 
+                              onClick={() => handleDeleteMemory(mem.id)}
+                              style={{ background: 'transparent', border: 'none', color: '#71717a', cursor: 'pointer', padding: '2px', borderRadius: '4px', fontSize: '11px' }}
+                              title="Delete memory"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '11.5px', color: '#d4d4d8', lineHeight: 1.45 }}>{mem.content}</div>
+                          {mem.tags && mem.tags.length > 0 && (
+                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '2px' }}>
+                              {mem.tags.map((t, idx) => (
+                                <span key={idx} className="tag-chip">#{t}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Workspace Files Filter */}
+                  <input 
+                    type="text"
+                    placeholder="Search workspace files..."
+                    value={workspaceQuery}
+                    onChange={(e) => setWorkspaceQuery(e.target.value)}
+                    style={{ padding: '7px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#fff', fontSize: '11.5px', outline: 'none' }}
+                  />
+
+                  {workspaceFiles.filter(f => !workspaceQuery || f.filename.toLowerCase().includes(workspaceQuery.toLowerCase())).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '24px', fontSize: '11px', color: '#64748b' }}>
+                      No files currently tracked in the agent workspace.
+                    </div>
+                  ) : (
+                    workspaceFiles
+                      .filter(f => !workspaceQuery || f.filename.toLowerCase().includes(workspaceQuery.toLowerCase()))
+                      .map((file) => (
+                        <div key={file.file_id || file.filename} className="memory-item-card">
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600, fontSize: '12px', color: '#38bdf8' }}>📄 {file.filename}</span>
+                            <span style={{ fontSize: '10px', color: '#a1a1aa' }}>
+                              {Math.round(file.size_bytes / 1024)} KB
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '10.5px', color: '#71717a', fontFamily: 'monospace' }}>
+                            {file.path}
+                          </div>
+                          {file.task_id && (
+                            <div style={{ fontSize: '9.5px', color: '#a78bfa' }}>
+                              Generated by task: {file.task_id}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        ) : activeTab === 'skills' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
+            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Skills & AI Specialists (KAIRO)</div>
+              <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Discover registered system skills and delegate multi-step autonomous tasks to specialists</div>
+            </div>
+
+            <div className="subnav-pills">
+              <button 
+                className={`subnav-btn ${skillsSubTab === 'skills' ? 'active' : ''}`}
+                onClick={() => setSkillsSubTab('skills')}
+              >
+                ⚡ Skills Library ({registeredSkills.length})
+              </button>
+              <button 
+                className={`subnav-btn ${skillsSubTab === 'specialists' ? 'active' : ''}`}
+                onClick={() => setSkillsSubTab('specialists')}
+              >
+                🤖 AI Specialists ({specialistsList.length})
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {skillsSubTab === 'skills' ? (
+                registeredSkills.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '24px', fontSize: '11px', color: '#64748b' }}>
+                    Loading skills catalog...
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '8px' }}>
+                    {registeredSkills.map((skill) => (
+                      <div key={skill.name} className="skill-card">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '14px' }}>🛠️</span>
+                          <span style={{ fontWeight: 600, fontSize: '12px', color: '#ffffff' }}>{skill.name}</span>
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#a1a1aa', lineHeight: 1.4 }}>
+                          {skill.description}
+                        </div>
+                        {skill.parameters && (
+                          <div style={{ fontSize: '9.5px', color: '#64748b', fontFamily: 'monospace', marginTop: '2px' }}>
+                            Params: {Object.keys(skill.parameters.properties || {}).join(', ') || 'none'}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : (
+                <>
+                  {/* Specialist Delegation Box */}
+                  <div style={{ background: 'linear-gradient(180deg, rgba(167, 139, 250, 0.08) 0%, rgba(20, 20, 24, 0.95) 100%)', border: '1px solid rgba(167, 139, 250, 0.3)', borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#ffffff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span>⚡</span> Specialist Delegation Terminal
+                      </div>
+                      <select 
+                        value={specialistSelected}
+                        onChange={(e) => setSpecialistSelected(e.target.value)}
+                        style={{ padding: '4px 8px', background: '#18181b', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '6px', color: '#c084fc', fontSize: '11px', outline: 'none' }}
+                      >
+                        <option value="kairo_coding">KAIRO-AI Coding Specialist</option>
+                        <option value="research">Research Specialist</option>
+                        <option value="data_analysis">Data Analysis Specialist</option>
+                      </select>
+                    </div>
+
+                    <textarea 
+                      placeholder="Enter a task to delegate (e.g. 'Write a Python script to calculate Fibonacci sequence and test it')"
+                      value={specialistTaskInput}
+                      onChange={(e) => setSpecialistTaskInput(e.target.value)}
+                      rows={2}
+                      style={{ padding: '8px 10px', background: 'var(--bg-input)', border: '1px solid var(--border-glass)', borderRadius: '6px', color: '#fff', fontSize: '11.5px', outline: 'none', resize: 'vertical' }}
+                    />
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button 
+                        className="btn btn-primary"
+                        onClick={handleDelegateSpecialist}
+                        disabled={specialistLoading || !specialistTaskInput.trim()}
+                        style={{ padding: '6px 14px', fontSize: '11px', fontWeight: 600, borderRadius: '6px' }}
+                      >
+                        {specialistLoading ? 'Specialist Working...' : 'Delegate Task'}
+                      </button>
+                    </div>
+
+                    {specialistResult && (
+                      <div style={{ marginTop: '6px', padding: '10px', background: '#09090b', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '11px', fontWeight: 600, color: specialistResult.status === 'success' ? '#34d399' : '#f87171' }}>
+                            {specialistResult.status === 'success' ? '✔ Task Completed & Verified' : '✖ Delegation Failed'}
+                          </span>
+                          {specialistResult.specialist && (
+                            <span style={{ fontSize: '10px', color: '#a1a1aa' }}>Specialist: {specialistResult.specialist}</span>
+                          )}
+                        </div>
+                        {specialistResult.summary && (
+                          <div style={{ fontSize: '11.5px', color: '#e4e4e7' }}>{specialistResult.summary}</div>
+                        )}
+                        {specialistResult.code_artifacts && Object.entries(specialistResult.code_artifacts).map(([fname, code]) => (
+                          <div key={fname} style={{ marginTop: '4px' }}>
+                            <div style={{ fontSize: '10.5px', fontWeight: 600, color: '#38bdf8', marginBottom: '2px' }}>📄 {fname}</div>
+                            <pre style={{ margin: 0, padding: '8px', background: '#111114', borderRadius: '6px', fontSize: '10.5px', color: '#f4f4f5', overflowX: 'auto' }}>
+                              <code>{String(code)}</code>
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Specialists Cards */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {specialistsList.map((spec) => (
+                      <div key={spec.name} className={`specialist-card ${spec.name.includes('KAIRO') ? 'kairo' : ''}`}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontWeight: 600, fontSize: '12.5px', color: '#ffffff' }}>{spec.name}</span>
+                          <span style={{ fontSize: '10px', color: '#34d399', background: 'rgba(52, 211, 153, 0.1)', padding: '2px 6px', borderRadius: '4px' }}>Ready</span>
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#a1a1aa', lineHeight: 1.45 }}>
+                          {spec.description || 'Specialized agent orchestrator capable of multi-step autonomous execution.'}
+                        </div>
+                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                          {spec.capabilities.map((cap, i) => (
+                            <span key={i} className="tag-chip">⚡ {cap}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         ) : activeTab === 'settings' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
             

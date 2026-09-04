@@ -245,6 +245,89 @@ class MouseDoubleClickTool(BaseTool):
             }
 
 
+class MouseScrollTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "mouse_scroll"
+
+    @property
+    def description(self) -> str:
+        return "Scroll the mouse wheel in a specified direction (up, down, left, right) by a number of clicks/notches."
+
+    @property
+    def category(self) -> str:
+        return "computer"
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "clicks": {"type": "integer", "description": "Number of scroll steps/clicks (default 1)", "default": 1},
+                "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "default": "down", "description": "Scroll direction: up/down for vertical, left/right for horizontal"},
+                "x": {"type": "integer", "description": "Optional X coordinate to hover over before scrolling"},
+                "y": {"type": "integer", "description": "Optional Y coordinate to hover over before scrolling"},
+                "target_window": {"type": "string", "description": "Optional target window title or process name"},
+                "coordinate_space": {"type": "string", "enum": ["screen", "window", "content"], "default": "content", "description": "Coordinate reference space"}
+            }
+        }
+
+    async def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        win_before = win32_utils.get_active_window_details()
+        clicks = int(arguments.get("clicks", 1))
+        direction = str(arguments.get("direction", "down")).lower().strip()
+        
+        abs_x = None
+        abs_y = None
+        if "x" in arguments and "y" in arguments:
+            resolved, coords, err = win32_utils.resolve_coordinates(arguments)
+            if not resolved or not coords:
+                return {
+                    "call_id": "",
+                    "success": False,
+                    "input_executed": False,
+                    "coordinates_used": None,
+                    "target_window_before": win_before,
+                    "target_window_after": win_before,
+                    "verification_status": "verification_failed",
+                    "output": "",
+                    "error": err
+                }
+            abs_x = coords["x"]
+            abs_y = coords["y"]
+            
+        try:
+            win32_utils.mouse_scroll(clicks=clicks, direction=direction, x=abs_x, y=abs_y)
+            win_after = win32_utils.get_active_window_details()
+            msg = f"Scrolled mouse {direction} by {clicks} clicks"
+            if abs_x is not None and abs_y is not None:
+                msg += f" at ({abs_x}, {abs_y})"
+                
+            return {
+                "call_id": "",
+                "success": True,
+                "input_executed": True,
+                "coordinates_used": {"x": abs_x, "y": abs_y} if abs_x is not None else None,
+                "target_window_before": win_before,
+                "target_window_after": win_after,
+                "verification_status": "verified_success",
+                "output": msg,
+                "error": None
+            }
+        except Exception as e:
+            return {
+                "call_id": "",
+                "success": False,
+                "input_executed": False,
+                "coordinates_used": {"x": abs_x, "y": abs_y} if abs_x is not None else None,
+                "target_window_before": win_before,
+                "target_window_after": win32_utils.get_active_window_details(),
+                "verification_status": "verification_failed",
+                "output": "",
+                "error": f"Failed to scroll mouse: {str(e)}"
+            }
+
+
 class MouseDownTool(BaseTool):
     @property
     def name(self) -> str:

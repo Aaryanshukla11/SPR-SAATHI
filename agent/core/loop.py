@@ -10,6 +10,9 @@ from agent.core import win32_utils
 from agent.core.vision import SCREEN_OBSERVER
 from agent.models.base import validate_model_decision
 from agent.core.trace import ExecutionTracer
+from agent.core.action import Action, ActionStatus, VerificationStatus
+from agent.core.verification import VERIFIER
+from agent.core.recovery import RECOVERY_ENGINE, FailureClassifier, RecoveryAction
 
 class AgentLoop:
     def __init__(
@@ -18,18 +21,21 @@ class AgentLoop:
         planner: BasePlanner,
         executor: ToolExecutor,
         takeover_manager: TakeoverManager,
-        broadcast_callback: Optional[Callable] = None
+        broadcast_callback: Optional[Callable] = None,
+        task_manager: Optional[Any] = None
     ):
         self.state_tracker = state_tracker
         self.planner = planner
         self.executor = executor
         self.takeover_manager = takeover_manager
         self.broadcast_callback = broadcast_callback
+        self.task_manager = task_manager
         
         self._cancellation_requested = False
         self._running_task: Optional[asyncio.Task] = None
         self._user_response_future: Optional[asyncio.Future] = None
         self.tracer: Optional[ExecutionTracer] = None
+        self._lock = asyncio.Lock()
         
         # Safety Limits (Requirement 26)
         self.max_steps = 50
@@ -41,7 +47,7 @@ class AgentLoop:
         if self.broadcast_callback:
             event = {
                 "event_type": event_type,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "task_id": self.state_tracker.task_id,
                 "message": message,
                 "payload": payload or {}
@@ -53,7 +59,10 @@ class AgentLoop:
             raise RuntimeError("An autonomous task is already running.")
 
         self._cancellation_requested = False
-        self.state_tracker.reset(task_description)
+        if self.task_manager:
+            task = self.task_manager.create_task(task_description)
+        else:
+            self.state_tracker.reset(task_description)
         self._running_task = asyncio.create_task(self._loop(task_description))
         asyncio.create_task(self._emit_event("task.created", f"Started task: {task_description}"))
 
@@ -61,6 +70,8 @@ class AgentLoop:
         self._cancellation_requested = True
         self.state_tracker.update_status("cancelled")
         self.state_tracker.cancel_all_steps()
+        if self.task_manager:
+            self.task_manager.cancel_task(self.state_tracker.task_id)
         
         # Release any mouse buttons held by the AI on cancel
         win32_utils.release_all_buttons()
@@ -76,6 +87,15 @@ class AgentLoop:
             self._running_task.cancel()
         asyncio.create_task(self._emit_event("task.cancelled", "Task was cancelled/stopped by user."))
 
+    def submit_user_response(self, answer: str) -> bool:
+        """
+        Phase 15: Resolves user clarification question future to resume autonomous task.
+        """
+        if self._user_response_future and not self._user_response_future.done():
+            self._user_response_future.set_result(answer)
+            return True
+        return False
+
     def pause_task_for_takeover(self):
         """
         Immediately pauses the current task.
@@ -87,6 +107,8 @@ class AgentLoop:
             self.takeover_manager.take_control()
             self.state_tracker.takeover_active = True
             self.state_tracker.update_status("paused")
+            if self.task_manager:
+                self.task_manager.pause_task(self.state_tracker.task_id)
             return
 
         # Trigger takeover state in manager
@@ -95,6 +117,8 @@ class AgentLoop:
         # Update tracker status
         self.state_tracker.takeover_active = True
         self.state_tracker.update_status("paused")
+        if self.task_manager:
+            self.task_manager.pause_task(self.state_tracker.task_id)
         
         # Release any mouse buttons immediately
         win32_utils.release_all_buttons()
@@ -161,11 +185,13 @@ class AgentLoop:
 
         # 4. Spawn new loop task continuing from same state
         self._cancellation_requested = False
-        self._running_task = asyncio.create_task(self._loop(task_desc))
+        if self.task_manager:
+            self.task_manager.resume_task()
+        self._running_task = asyncio.create_task(self._loop(task_desc, is_resumed=True))
         await self._emit_event("task.resumed", "AI control active: loop execution resumed.")
         return True
 
-    async def _loop(self, task: str):
+    async def _loop(self, task: str, is_resumed: bool = False):
         start_task_time = time.time()
         consecutive_replans = 0
         step_attempts: Dict[str, int] = {}
@@ -173,13 +199,22 @@ class AgentLoop:
         # Initialize generic observational tracer
         self.tracer = ExecutionTracer(task)
 
-        # Generate initial high-level plan (Requirement 12)
-        self.state_tracker.update_status("planning")
-        await self._emit_event("task.planning", "Decomposing goal into plan checklist...")
-        initial_steps = self.planner.create_high_level_plan(task)
-        self.state_tracker.set_structured_steps(initial_steps)
-        await self._emit_event("task.plan_updated", "High-level plan generated.", {"steps": initial_steps})
-        await asyncio.sleep(0.5)
+        # Generate initial high-level plan only if not resuming an existing checklist
+        if not is_resumed or not self.state_tracker.steps:
+            RECOVERY_ENGINE.reset_for_new_task()
+            self.state_tracker.update_status("planning")
+            await self._emit_event("task.planning", "Decomposing goal into plan checklist...")
+            initial_steps = self.planner.create_high_level_plan(task)
+            self.state_tracker.set_structured_steps(initial_steps)
+            if self.task_manager:
+                t = self.task_manager.get_task(self.state_tracker.task_id)
+                if t:
+                    t.set_steps(initial_steps)
+            await self._emit_event("task.plan_updated", "High-level plan generated.", {"steps": initial_steps})
+            await asyncio.sleep(0.5)
+        else:
+            self.state_tracker.update_status("running")
+            await self._emit_event("task.plan_resumed", "Continuing with existing checklist.", {"steps": self.state_tracker.steps})
 
         try:
             while True:
@@ -295,6 +330,8 @@ class AgentLoop:
                 # --- final decision ---
                 if dtype == "final":
                     self.state_tracker.update_status("completed")
+                    if self.task_manager:
+                        self.task_manager.update_task_status(self.state_tracker.task_id, "completed")
                     await self._emit_event("task.completed", decision.get("message", "Task finished successfully!"))
                     return
                     
@@ -344,7 +381,6 @@ class AgentLoop:
                 elif dtype == "tool_call":
                     tool_name = decision.get("tool_name", "")
                     args = decision.get("arguments", {})
-                    call_id = f"step_{self.state_tracker.attempt_count + 1}"
                     
                     # Find active step to check progress checklist
                     active_step_id = None
@@ -362,7 +398,7 @@ class AgentLoop:
                         err_text = f"Action validation rejected: {err_msg}"
                         await self._emit_event("tool.failed", err_text, {"tool": tool_name})
                         # Fail-safe record to history
-                        self.state_tracker.add_action_history(tool_name, args, "failed", err_text, 0)
+                        self.state_tracker.add_action_history(tool_name, args, "failed", err_text, 0, verification_status="verification_failed")
                         raise ValueError(err_text)
                     
                     # 2. Loop Protection Stuck Limits (Requirement 27)
@@ -370,21 +406,49 @@ class AgentLoop:
                     if len(recent_actions) >= 3 and all(a.get("action") == tool_name and a.get("parameters") == args and a.get("status") == "failed" for a in recent_actions):
                         raise RuntimeError(f"Loop protection triggered: Repeated execution failures for tool '{tool_name}' with arguments {args}.")
 
+                    # Create formal Action instance with unique action_id and task_id
+                    action = Action(
+                        task_id=self.state_tracker.task_id or "default",
+                        action_type=tool_name,
+                        arguments=args,
+                        step_id=active_step_id
+                    )
+                    action.start_execution()
+                    if self.task_manager:
+                        t = self.task_manager.get_task(action.task_id)
+                        if t:
+                            t.add_action(action)
+
                     # 3. Check permission & Act
                     self.state_tracker.update_status("waiting_permission")
-                    await self._emit_event("tool.requested", f"Action request: {tool_name}", {"tool_call": {"tool_name": tool_name, "arguments": args, "call_id": call_id}})
+                    await self._emit_event("tool.requested", f"Action request: {tool_name}", {"tool_call": {"tool_name": tool_name, "arguments": args, "call_id": action.action_id, "action_id": action.action_id}})
                     
                     if active_step_id:
-                        self.state_tracker.start_step(active_step_id, {"tool_name": tool_name, "arguments": args, "call_id": call_id})
+                        self.state_tracker.start_step(active_step_id, {"tool_name": tool_name, "arguments": args, "call_id": action.action_id, "action_id": action.action_id})
                     
                     self.state_tracker.update_status("acting")
                     await self._emit_event("tool.started", f"Acting: executing {tool_name}")
                     
                     active_win_before = win32_utils.get_active_window_details()
                     start_time = time.time()
-                    result = await self.executor.execute_action(tool_name, args, call_id)
+                    result = await self.executor.execute_action(tool_name, args, call_id=action.action_id, task_id=action.task_id)
                     duration_ms = int((time.time() - start_time) * 1000)
                     active_win_after = win32_utils.get_active_window_details()
+
+                    # Immediate cancellation check: do not proceed if task was cancelled
+                    if self._cancellation_requested:
+                        action.cancel("Task cancelled during action execution")
+                        self.state_tracker.add_action_history(
+                            tool_name,
+                            args,
+                            "cancelled",
+                            "Task cancelled by user",
+                            duration_ms,
+                            action_id=action.action_id,
+                            task_id=action.task_id,
+                            verification_status="unverified"
+                        )
+                        return
 
                     # Compute internal coordinate transformation if any was performed
                     transformed_coords = None
@@ -411,20 +475,13 @@ class AgentLoop:
                     # 4. OBSERVE AFTER ACTION (Let UI settle & capture updated visual state)
                     self.state_tracker.update_status("verifying")
                     await asyncio.sleep(0.35)
+
+                    if self._cancellation_requested:
+                        action.cancel("Task cancelled during verification wait")
+                        return
                     
                     obs_after = SCREEN_OBSERVER.capture_observation(task_id=self.state_tracker.task_id)
                     self.state_tracker.update_computer_state(obs_after)
-
-                    self.state_tracker.add_action_history(
-                        tool_name, 
-                        args, 
-                        "completed" if result["success"] else "failed", 
-                        result.get("error"), 
-                        duration_ms,
-                        output=result.get("output"),
-                        obs_before=obs_before,
-                        obs_after=obs_after
-                    )
 
                     after_win = obs_after.get("active_window")
                     after_win_title = after_win.get("title", "Desktop") if after_win else "Desktop"
@@ -434,63 +491,83 @@ class AgentLoop:
                         obs_after
                     )
 
-                    # Deterministic validation for launch/focus/mouse verification
-                    if result["success"]:
-                        if tool_name == "launch_app":
-                            target_name = args.get("app_name", "").lower()
-                            clean_name = target_name.replace(".exe", "")
-                            matched = False
-                            for _ in range(12):
-                                windows = win32_utils.list_desktop_windows()
-                                if any(clean_name in w["process"].lower() or clean_name in w["title"].lower() for w in windows):
-                                    matched = True
-                                    break
-                                await asyncio.sleep(0.5)
-                            if not matched:
-                                result["success"] = False
-                                result["error"] = f"Verification failed: Process/window for '{target_name}' was not detected after launching."
-                                
-                        elif tool_name == "focus_window":
-                            title_sub = args.get("title_substring", "").lower()
-                            proc_name = args.get("process_name", "").lower()
-                            matched = False
-                            for _ in range(3):
-                                active_window = win32_utils.get_active_window_details()
-                                if active_window:
-                                    title_match = not title_sub or title_sub in active_window["title"].lower()
-                                    proc_match = not proc_name or proc_name in active_window["process"].lower()
-                                    if title_match and proc_match:
-                                        matched = True
-                                        break
-                                
-                                windows = win32_utils.list_desktop_windows()
-                                if any((not title_sub or title_sub in w["title"].lower()) and 
-                                       (not proc_name or proc_name in w["process"].lower()) for w in windows):
-                                    matched = True
-                                    break
-                                    
-                                await asyncio.sleep(0.5)
-                            if not matched:
-                                result["success"] = False
-                                result["error"] = "Verification failed: Target window was not focused."
+                    # Phase 4: Multi-Level Verification
+                    v_results = VERIFIER.verify_action(tool_name, args, result, obs_before, obs_after)
+                    for v_level, v_res in v_results.items():
+                        if not v_res.passed:
+                            result["success"] = False
+                            if not result.get("error"):
+                                result["error"] = v_res.details
+                            break
 
-                        elif tool_name in ("mouse_drag", "draw_line", "draw_polyline", "draw_rectangle", "draw_shape"):
-                            # Distinguish ACTION_SUCCESS (OS input injected) from RESULT_SUCCESS (pixels visually modified)
-                            if result.get("result_success") is False or result.get("verification_status") == "verification_failed":
-                                result["success"] = False
-                                if not result.get("error"):
-                                    result["error"] = "Visual verification failed: No visible change detected on the target canvas."
+                    # Determine final verification status
+                    verification_status = "verified_success" if result["success"] else "verification_failed"
+                    if result["success"]:
+                        action.complete(
+                            output=result.get("output"),
+                            result_payload=result,
+                            duration_ms=duration_ms,
+                            verification_status=VerificationStatus.VERIFIED_SUCCESS,
+                            obs_before=obs_before,
+                            obs_after=obs_after
+                        )
+                    else:
+                        action.fail(
+                            error_message=result.get("error", "Action failed"),
+                            result_payload=result,
+                            duration_ms=duration_ms,
+                            verification_status=VerificationStatus.VERIFICATION_FAILED,
+                            obs_before=obs_before,
+                            obs_after=obs_after
+                        )
+
+                    # Record verified action history
+                    self.state_tracker.add_action_history(
+                        tool_name, 
+                        args, 
+                        "completed" if result["success"] else "failed", 
+                        result.get("error"), 
+                        duration_ms,
+                        output=result.get("output"),
+                        obs_before=obs_before,
+                        obs_after=obs_after,
+                        action_id=action.action_id,
+                        task_id=action.task_id,
+                        verification_status=verification_status
+                    )
 
                     # Verify outcome
                     if result["success"]:
-                        await self._emit_event("tool.completed", f"Action completed: {tool_name}", {"duration_ms": duration_ms})
+                        await self._emit_event("tool.completed", f"Action completed: {tool_name}", {"duration_ms": duration_ms, "action_id": action.action_id})
                         if active_step_id:
                             self.state_tracker.complete_step(active_step_id)
                         consecutive_replans = 0 # reset replans on success
                     else:
-                        await self._emit_event("tool.failed", f"Action failed: {result['error']}", {"duration_ms": duration_ms})
+                        await self._emit_event("tool.failed", f"Action failed: {result['error']}", {"duration_ms": duration_ms, "action_id": action.action_id})
                         if active_step_id:
                             self.state_tracker.fail_step(active_step_id)
+
+                        # Phase 4: Failure Classification & Graduated Recovery Strategy
+                        fail_class = FailureClassifier.classify(tool_name, result, v_results)
+                        if fail_class:
+                            rec_strat, rec_reason, alt_tool = RECOVERY_ENGINE.determine_recovery_strategy(tool_name, fail_class)
+                            await self._emit_event(
+                                "task.recovery",
+                                f"Recovery: {rec_strat.value} - {rec_reason}",
+                                {"strategy": rec_strat.value, "reason": rec_reason, "alternative_tool": alt_tool}
+                            )
+
+                            if rec_strat == RecoveryAction.STOP:
+                                self.state_tracker.update_status("failed")
+                                await self._emit_event("task.failed", f"Task terminated by recovery limits: {rec_reason}")
+                                return
+                            elif rec_strat == RecoveryAction.ASK_USER:
+                                self.state_tracker.update_status("paused")
+                                await self._emit_event("task.paused", f"Paused for user input: {rec_reason}")
+                                return
+                            elif rec_strat == RecoveryAction.REPLAN:
+                                active_step_id = None
+                                consecutive_replans += 1
                             
                         # Increment step retry attempt counts
                         step_id = active_step_id or "generic"
@@ -511,16 +588,22 @@ class AgentLoop:
             if self.takeover_manager.is_takeover_active:
                 # Execution paused for human takeover; preserve checklist state & task ID
                 self.state_tracker.update_status("paused")
+                if self.task_manager:
+                    self.task_manager.pause_task(self.state_tracker.task_id)
                 win32_utils.release_all_buttons()
                 await self._emit_event("control.takeover_started", "Takeover active: AI loop paused safely.")
             else:
                 self.state_tracker.update_status("cancelled")
                 self.state_tracker.cancel_all_steps()
+                if self.task_manager:
+                    self.task_manager.cancel_task(self.state_tracker.task_id)
                 win32_utils.release_all_buttons()
                 await self._emit_event("task.cancelled", "Autonomous task cancelled.")
         except Exception as e:
             self.state_tracker.update_status("failed")
             self.state_tracker.error_message = str(e)
+            if self.task_manager:
+                self.task_manager.update_task_status(self.state_tracker.task_id, "failed", error_message=str(e))
             win32_utils.release_all_buttons()
             await self._emit_event("task.failed", f"Autonomous task failed: {str(e)}", {"error": str(e)})
         finally:

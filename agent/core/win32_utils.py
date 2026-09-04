@@ -4,6 +4,7 @@ import sys
 import threading
 import math
 import logging
+import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("agent.core.win32_utils")
@@ -38,6 +39,8 @@ MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_MIDDLEDOWN = 0x0020
 MOUSEEVENTF_MIDDLEUP = 0x0040
+MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_HWHEEL = 0x1000
 MOUSEEVENTF_ABSOLUTE = 0x8000
 
 # Track mouse buttons held down by the AI
@@ -520,6 +523,39 @@ def mouse_click(x: int, y: int, button: str = "left", click_count: int = 1):
 def mouse_double_click(x: int, y: int, button: str = "left"):
     mouse_click(x, y, button, click_count=2)
 
+def mouse_scroll(clicks: int = 1, direction: str = "down", x: Optional[int] = None, y: Optional[int] = None):
+    """
+    Simulates mouse wheel scrolling on Windows.
+    - direction: 'up', 'down' (vertical wheel), 'left', 'right' (horizontal wheel)
+    - clicks: number of scroll steps/notches (default 1). Each notch is WHEEL_DELTA (120 units).
+    - x, y: optional coordinates to move the mouse cursor to before scrolling.
+    """
+    if not IS_WINDOWS:
+        return
+    with _GLOBAL_INPUT_LOCK:
+        if x is not None and y is not None:
+            mouse_move(x, y)
+            time.sleep(0.02)
+            
+        d = direction.lower().strip()
+        WHEEL_DELTA = 120
+        num_clicks = max(1, abs(clicks))
+        
+        if d == "up":
+            delta = WHEEL_DELTA * num_clicks
+            send_mouse_event(MOUSEEVENTF_WHEEL, data=delta)
+        elif d == "down":
+            delta = -WHEEL_DELTA * num_clicks
+            send_mouse_event(MOUSEEVENTF_WHEEL, data=delta)
+        elif d == "right":
+            delta = WHEEL_DELTA * num_clicks
+            send_mouse_event(MOUSEEVENTF_HWHEEL, data=delta)
+        elif d == "left":
+            delta = -WHEEL_DELTA * num_clicks
+            send_mouse_event(MOUSEEVENTF_HWHEEL, data=delta)
+        else:
+            raise ValueError(f"Unsupported scroll direction: '{direction}'. Must be 'up', 'down', 'left', or 'right'.")
+
 def mouse_drag(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 250, button: str = "left") -> bool:
     """
     Executes a continuous, distance-interpolated mouse drag with thread-safe global input serialization,
@@ -758,7 +794,62 @@ def focus_window(hwnd: int) -> bool:
         if target_thread_id and target_thread_id != current_thread_id:
             ctypes.windll.user32.AttachThreadInput(current_thread_id, target_thread_id, False)
 
-    return True
+    # Verify foreground state after bringing window to foreground
+    time.sleep(0.04)
+    final_fg = ctypes.windll.user32.GetForegroundWindow()
+    return bool(final_fg == hwnd)
+
+def verify_foreground_state(hwnd: int) -> bool:
+    """Verifies whether the specified window is currently the active foreground window."""
+    if not IS_WINDOWS or not hwnd:
+        return True
+    return bool(ctypes.windll.user32.GetForegroundWindow() == hwnd)
+
+def is_window_responsive(hwnd: int) -> bool:
+    """Checks if a window is responding to messages (not hung)."""
+    if not IS_WINDOWS or not hwnd:
+        return True
+    try:
+        return ctypes.windll.user32.IsHungAppWindow(hwnd) == 0
+    except Exception:
+        return True
+
+async def wait_for_application_ready_async(process_or_title: str, timeout: float = 5.0) -> Dict[str, Any]:
+    """
+    Detects application readiness after launch by polling for:
+    1. A visible top-level window matching the process or title.
+    2. Window message responsiveness (IsHungAppWindow == 0).
+    """
+    if not IS_WINDOWS:
+        return {"ready": True, "hwnd": 0, "title": process_or_title, "process": process_or_title, "wait_time_ms": 0}
+        
+    start_t = time.time()
+    query = process_or_title.lower().strip().replace(".exe", "")
+    
+    while time.time() - start_t < timeout:
+        windows = list_desktop_windows()
+        for w in windows:
+            proc_match = query in w["process"].lower()
+            title_match = query in w["title"].lower()
+            if proc_match or title_match:
+                hwnd = w["hwnd"]
+                if is_window_responsive(hwnd):
+                    return {
+                        "ready": True,
+                        "hwnd": hwnd,
+                        "title": w["title"],
+                        "process": w["process"],
+                        "wait_time_ms": int((time.time() - start_t) * 1000)
+                    }
+        await asyncio.sleep(0.2)
+        
+    return {
+        "ready": False,
+        "hwnd": 0,
+        "title": "",
+        "process": process_or_title,
+        "wait_time_ms": int((time.time() - start_t) * 1000)
+    }
 
 def close_window(hwnd: int) -> bool:
     if not IS_WINDOWS:
@@ -1211,4 +1302,167 @@ def get_installed_applications():
     # Sort alphabetically
     apps.sort(key=lambda x: x["name"].lower())
     return apps
+
+
+def get_running_processes(limit: int = 25) -> List[Dict[str, Any]]:
+    """
+    Returns active running processes on Windows, sorted by memory footprint.
+    Includes PID, process name, memory usage (MB), and status.
+    """
+    procs = []
+    try:
+        import psutil
+        for p in psutil.process_iter(['pid', 'name', 'memory_info', 'status']):
+            try:
+                info = p.info
+                mem_mb = round(info['memory_info'].rss / (1024 * 1024), 1) if info.get('memory_info') else 0
+                procs.append({
+                    "pid": info['pid'],
+                    "name": info['name'] or "unknown",
+                    "memory_mb": mem_mb,
+                    "status": info.get('status', 'running')
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        procs.sort(key=lambda x: x["memory_mb"], reverse=True)
+        return procs[:limit]
+    except Exception as e:
+        logger.warning(f"Failed to enumerate processes: {e}")
+        return []
+
+
+def get_window_hierarchy(hwnd: int) -> List[Dict[str, Any]]:
+    """
+    Enumerates the child control hierarchy of a window using EnumChildWindows.
+    Extracts control HWND, class name (e.g. Edit, Button, DirectUIHWND),
+    control text, bounds, and visibility.
+    """
+    if not IS_WINDOWS or not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+        return []
+
+    children: List[Dict[str, Any]] = []
+
+    def enum_child_callback(child_hwnd, lparam):
+        try:
+            if not ctypes.windll.user32.IsWindow(child_hwnd):
+                return True
+            # Class name
+            class_buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetClassNameW(child_hwnd, class_buf, 256)
+            class_name = class_buf.value
+
+            # Text
+            text_len = ctypes.windll.user32.GetWindowTextLengthW(child_hwnd)
+            text_buf = ctypes.create_unicode_buffer(text_len + 1)
+            ctypes.windll.user32.GetWindowTextW(child_hwnd, text_buf, text_len + 1)
+            text = text_buf.value
+
+            # Bounds
+            rect = RECT()
+            ctypes.windll.user32.GetWindowRect(child_hwnd, ctypes.byref(rect))
+            visible = bool(ctypes.windll.user32.IsWindowVisible(child_hwnd))
+            ctrl_id = ctypes.windll.user32.GetDlgCtrlID(child_hwnd)
+
+            children.append({
+                "hwnd": child_hwnd,
+                "class_name": class_name,
+                "text": text,
+                "visible": visible,
+                "control_id": ctrl_id,
+                "bounds": {
+                    "x": rect.left,
+                    "y": rect.top,
+                    "width": max(0, rect.right - rect.left),
+                    "height": max(0, rect.bottom - rect.top)
+                }
+            })
+        except Exception:
+            pass
+        return True
+
+    cb = WNDENUMPROC(enum_child_callback)
+    ctypes.windll.user32.EnumChildWindows(hwnd, cb, 0)
+    return children
+
+
+def get_application_metadata(hwnd: int) -> Dict[str, Any]:
+    """
+    Extracts comprehensive metadata about the application owning a window:
+    - class name
+    - process ID and process executable path
+    - window styles
+    - responsiveness (not hung)
+    - window state (minimized, maximized, normal, foreground)
+    """
+    if not IS_WINDOWS or not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+        return {}
+
+    class_buf = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(hwnd, class_buf, 256)
+
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    process_id = pid.value
+
+    exe_path = ""
+    try:
+        import psutil
+        p = psutil.Process(process_id)
+        exe_path = p.exe()
+    except Exception:
+        pass
+
+    is_min = bool(ctypes.windll.user32.IsIconic(hwnd))
+    is_max = bool(ctypes.windll.user32.IsZoomed(hwnd))
+    is_fg = bool(ctypes.windll.user32.GetForegroundWindow() == hwnd)
+    is_resp = is_window_responsive(hwnd)
+
+    return {
+        "hwnd": hwnd,
+        "class_name": class_buf.value,
+        "pid": process_id,
+        "executable_path": exe_path,
+        "is_foreground": is_fg,
+        "is_minimized": is_min,
+        "is_maximized": is_max,
+        "is_responsive": is_resp
+    }
+
+
+def get_browser_state(hwnd: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """
+    Detects whether the target window or foreground window is a web browser
+    (Chrome, Edge, Brave, Firefox) and extracts tab title and domain/URL if available.
+    """
+    target = hwnd or (ctypes.windll.user32.GetForegroundWindow() if IS_WINDOWS else 0)
+    if not target or not IS_WINDOWS:
+        return None
+
+    details = get_active_window_details()
+    if not details:
+        return None
+
+    proc = (details.get("process") or "").lower()
+    title = details.get("title") or ""
+
+    browser_processes = {
+        "chrome.exe": "Google Chrome",
+        "msedge.exe": "Microsoft Edge",
+        "brave.exe": "Brave Browser",
+        "firefox.exe": "Mozilla Firefox",
+        "opera.exe": "Opera"
+    }
+
+    if proc in browser_processes:
+        browser_name = browser_processes[proc]
+        clean_title = title.replace(f" - {browser_name}", "").replace(f" — {browser_name}", "").strip()
+        return {
+            "is_browser": True,
+            "browser_name": browser_name,
+            "process": proc,
+            "tab_title": clean_title,
+            "raw_title": title,
+            "hwnd": target
+        }
+    return None
 

@@ -241,7 +241,7 @@ class ScreenObserver:
                 - image_available (bool)
                 - observation_error (optional error message if capture failed)
         """
-        now_str = datetime.datetime.utcnow().isoformat() + "Z"
+        now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # 1. Structural Window & Cursor State
         active_window = win32_utils.get_active_window_details()

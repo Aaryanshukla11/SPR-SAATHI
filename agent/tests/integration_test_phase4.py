@@ -51,7 +51,7 @@ async def run_phase4_integration():
         
         model = ApiModelProvider("Gemini 3.5 Flash")
         
-        async def mock_decide_action(goal, plan, observation, recent_history):
+        async def mock_decide_action(goal, plan, observation, recent_history, **kwargs):
             goal_lower = goal.lower()
             
             notepad_open = False
@@ -185,17 +185,18 @@ async def run_phase4_integration():
         await asyncio.sleep(1.0)
         
         print("Activating takeover...")
-        takeover_manager.take_control()
-        await asyncio.sleep(1.5)
+        loop.pause_task_for_takeover()
+        await asyncio.sleep(1.0)
         print(f"Agent state during takeover: {tracker.status}")
         assert tracker.status == "paused"
         
         print("Releasing takeover...")
-        takeover_manager.release_control()
-        await asyncio.sleep(1.5)
+        await loop.resume_task_after_takeover()
+        await asyncio.sleep(1.0)
         
         # Clean up loop
         loop.stop_task()
+        await asyncio.sleep(1.0)
         print("Takeover pausing and resuming completed successfully!")
 
         # ----------------------------------------------------
@@ -217,7 +218,7 @@ async def run_phase4_integration():
         # ----------------------------------------------------
         print("\n--- TEST 20: User Clarifications ---")
         # Set up mock model decision that requests user clarification
-        async def mock_ask_user(goal, plan, observation, recent_history):
+        async def mock_ask_user(goal, plan, observation, recent_history, **kwargs):
             # Check if user answered first
             for item in recent_history:
                 if item.get("action") == "ask_user" and "User answer:" in item.get("error", ""):
@@ -261,6 +262,12 @@ async def run_phase4_integration():
                     win32_utils.close_window(w["hwnd"])
                 except Exception:
                     pass
+
+import pytest
+
+@pytest.mark.asyncio
+async def test_phase4_end_to_end_notepad_and_ask_user():
+    await run_phase4_integration()
 
 if __name__ == "__main__":
     asyncio.run(run_phase4_integration())
