@@ -29,7 +29,9 @@ from agent.core.workspace import WORKSPACE_MANAGER, FileOrigin, FileType
 from agent.skills import SKILL_REGISTRY, get_skill_registry
 from agent.core.specialists import SPECIALIST_DELEGATOR, SpecialistType
 from agent.core.production_hardening import MEMORY_MONITOR, CRASH_RECOVERY
+import uuid
 from agent.models.router import ModelRouter, PrivacyLevel
+from agent.core.conversation_store import CONVERSATION_STORE
 
 # Initialize core modules
 state_tracker = StateTracker()
@@ -141,6 +143,7 @@ agent_loop = AgentLoop(
 import datetime
 class StartTaskRequest(BaseModel):
     task: str
+    attachments: Optional[List[Dict[str, Any]]] = None
 
 class ChatMessage(BaseModel):
     role: str
@@ -150,6 +153,15 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatMessage]] = None
     system_instruction: Optional[str] = None
+    session_id: Optional[str] = None
+    attachments: Optional[List[Dict[str, Any]]] = None
+
+class CreateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    model: Optional[str] = None
+
+class UpdateConversationRequest(BaseModel):
+    title: str
 
 class PermissionResponse(BaseModel):
     request_id: str
@@ -195,30 +207,97 @@ async def health():
 async def get_state():
     return state_tracker.to_dict()
 
+@app.post("/api/context/upload")
+async def upload_context_endpoint(files: List[UploadFile] = File(...)):
+    from agent.core.file_extractor import process_uploaded_file
+    workspace_dir = os.path.join(WORKSPACE_MANAGER.workspace_root, "uploads")
+    os.makedirs(workspace_dir, exist_ok=True)
+    
+    results = []
+    for file in files:
+        contents = await file.read()
+        item = process_uploaded_file(file.filename, contents)
+        
+        # Save to disk for persistence and workspace integration
+        dest_path = os.path.join(workspace_dir, file.filename)
+        try:
+            with open(dest_path, "wb") as f:
+                f.write(contents)
+            item["file_path"] = dest_path
+            WORKSPACE_MANAGER.register_file(
+                dest_path,
+                origin=FileOrigin.USER_UPLOAD,
+                task_id=state_tracker.task_id
+            )
+        except Exception:
+            item["file_path"] = ""
+            
+        results.append(item)
+        
+    return {"status": "success", "files": results}
+
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     user_msg = req.message.strip()
     if not user_msg:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
     
+    session_id = req.session_id or f"conv_{int(datetime.datetime.now().timestamp())}_{uuid.uuid4().hex[:6]}"
+    active_model_name = getattr(current_model_provider, "model_name", "unknown")
+    
+    user_display_msg = user_msg
+    image_base64 = None
+    if req.attachments:
+        att_names = [a.get("filename") or a.get("name", "file") for a in req.attachments]
+        user_display_msg = f"[Attached: {', '.join(att_names)}]\n{user_msg}"
+        
+        context_blocks = []
+        for att in req.attachments:
+            fname = att.get("filename") or att.get("name", "file")
+            ftype = att.get("file_type") or att.get("type", "unknown")
+            size_s = att.get("size_str", "")
+            txt = (att.get("extracted_text") or "").strip()
+            
+            if att.get("image_base64") and not image_base64:
+                image_base64 = att["image_base64"]
+                
+            if txt:
+                context_blocks.append(f"--- [File: {fname} | Type: {ftype} | Size: {size_s}] ---\n{txt}")
+                
+        if context_blocks:
+            attached_context = (
+                "\n\n=== USER ATTACHED CONTEXT FILES ===\n"
+                "The user has uploaded the following files/documents for you to analyze, understand, and use to answer their request:\n\n"
+                + "\n\n".join(context_blocks) +
+                "\n===================================\n"
+            )
+            default_system_prefix = attached_context
+        else:
+            default_system_prefix = ""
+    else:
+        default_system_prefix = ""
+
+    CONVERSATION_STORE.append_message(session_id, "user", user_display_msg, model=active_model_name)
+
     await broadcast_event({
         "event_type": "chat.started",
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "task_id": None,
         "message": f"User: {user_msg[:100]}",
-        "payload": {"message": user_msg}
+        "payload": {"message": user_msg, "session_id": session_id}
     })
 
     from agent.core.memory import MEMORY_MANAGER
-    MEMORY_MANAGER.record_conversation_turn("user", user_msg)
+    MEMORY_MANAGER.record_conversation_turn("user", user_display_msg, session_id=session_id)
 
     default_system = (
-        "You are SPR SAATHI in Chatbot Mode — a highly capable, knowledgeable, and helpful AI assistant (similar to ChatGPT).\n"
+        "You are ORBIT in Chatbot Mode — a highly capable, knowledgeable, and helpful AI assistant (similar to ChatGPT).\n"
         "Your role is to assist the user by having natural conversations, answering questions across any topic, explaining concepts clearly, "
         "providing thoughtful coding help and debugging, and formatting answers in clean GitHub-flavored Markdown with code blocks where helpful.\n"
-        "IMPORTANT: In this mode, you are operating strictly as a conversational chatbot. You do not control the user's computer or execute OS tools."
+        "IMPORTANT: When the user provides context files (PDF, DOC, text, code, or images), carefully study the attached content and answer thoroughly and accurately based on it.\n"
+        "In this mode, you are operating strictly as a conversational chatbot. You do not control the user's computer or execute OS tools."
     )
-    sys_instruction = req.system_instruction or default_system
+    sys_instruction = (req.system_instruction or default_system) + default_system_prefix
 
     try:
         relevant_mems = MEMORY_MANAGER.retrieve_relevant(user_msg, limit=3)
@@ -241,23 +320,26 @@ async def chat_endpoint(req: ChatRequest):
     try:
         response_obj = await current_model_provider.generate(
             prompt=full_prompt,
-            system_instruction=sys_instruction
+            system_instruction=sys_instruction,
+            image_base64=image_base64
         )
         response_text = response_obj.text if hasattr(response_obj, "text") else str(response_obj)
-        MEMORY_MANAGER.record_conversation_turn("assistant", response_text)
+        MEMORY_MANAGER.record_conversation_turn("assistant", response_text, session_id=session_id)
+        CONVERSATION_STORE.append_message(session_id, "assistant", response_text, model=active_model_name)
 
         await broadcast_event({
             "event_type": "chat.response",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "task_id": None,
             "message": "Chat response generated.",
-            "payload": {"response": response_text}
+            "payload": {"response": response_text, "session_id": session_id}
         })
 
         return {
             "status": "success",
             "response": response_text,
-            "model": getattr(current_model_provider, "model_name", "unknown")
+            "model": active_model_name,
+            "session_id": session_id
         }
     except Exception as e:
         err_msg = str(e)
@@ -268,17 +350,20 @@ async def chat_endpoint(req: ChatRequest):
         else:
             friendly_err = f"⚠️ **Chatbot Error**: {err_msg}"
 
+        CONVERSATION_STORE.append_message(session_id, "assistant", friendly_err, model=active_model_name)
+
         await broadcast_event({
             "event_type": "chat.error",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "task_id": None,
             "message": f"Chat error: {err_msg}",
-            "payload": {"error": friendly_err}
+            "payload": {"error": friendly_err, "session_id": session_id}
         })
         return {
             "status": "error",
             "response": friendly_err,
-            "model": getattr(current_model_provider, "model_name", "unknown")
+            "model": active_model_name,
+            "session_id": session_id
         }
 
 @app.post("/api/chat/clear")
@@ -292,12 +377,64 @@ async def clear_chat_endpoint():
     })
     return {"status": "cleared"}
 
+@app.get("/api/conversations")
+async def list_conversations_endpoint():
+    return {"conversations": CONVERSATION_STORE.list_conversations()}
+
+@app.get("/api/conversations/{session_id}")
+async def get_conversation_endpoint(session_id: str):
+    conv = CONVERSATION_STORE.get_conversation(session_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"conversation": conv}
+
+@app.post("/api/conversations")
+async def create_conversation_endpoint(req: Optional[CreateConversationRequest] = None):
+    title = req.title if req else None
+    model = req.model if req else getattr(current_model_provider, "model_name", "unknown")
+    conv = CONVERSATION_STORE.create_conversation(title=title, model=model)
+    return {"status": "created", "conversation": conv}
+
+@app.patch("/api/conversations/{session_id}")
+async def update_conversation_endpoint(session_id: str, req: UpdateConversationRequest):
+    ok = CONVERSATION_STORE.update_title(session_id, req.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "updated"}
+
+@app.delete("/api/conversations/{session_id}")
+async def delete_conversation_endpoint(session_id: str):
+    ok = CONVERSATION_STORE.delete_conversation(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "deleted"}
+
+@app.delete("/api/conversations")
+async def clear_conversations_endpoint():
+    CONVERSATION_STORE.clear_all()
+    return {"status": "cleared"}
+
 @app.post("/api/task/start")
 async def start_task(req: StartTaskRequest):
     if state_tracker.status not in ["idle", "stopped", "completed", "error", "failed", "cancelled"]:
         raise HTTPException(status_code=400, detail="Agent is already busy running a task.")
     
-    agent_loop.start_task(req.task)
+    task_description = req.task
+    if req.attachments:
+        att_lines = []
+        for att in req.attachments:
+            fname = att.get("filename") or att.get("name", "file")
+            fpath = att.get("file_path", "")
+            ftxt = (att.get("extracted_text") or "").strip()
+            if fpath:
+                info_str = f" | Details: {ftxt}" if ftxt else ""
+                att_lines.append(f"- File: {fname} (Saved at: {fpath}{info_str})")
+            elif ftxt:
+                att_lines.append(f"- File: {fname}:\n{ftxt[:400]}")
+        if att_lines:
+            task_description = f"{task_description}\n\n[Context Files Provided]:\n" + "\n".join(att_lines)
+            
+    agent_loop.start_task(task_description)
     return {"status": "started", "task_id": state_tracker.task_id}
 
 @app.post("/api/task/stop")

@@ -311,7 +311,22 @@ class AgentLoop:
                     self.tracer.record_model_decision(decision.get("_raw_response", decision), decision)
                 
                 # 5. VALIDATION (Requirement 3 & 10)
-                is_valid, err_msg = validate_model_decision(decision)
+                allowed_tool_names = set(self.executor.tools.keys()) if hasattr(self.executor, "tools") else None
+                
+                # Auto-repair model decision if computer action was given as top-level decision type
+                if isinstance(decision, dict):
+                    raw_dtype = decision.get("decision_type") or decision.get("type")
+                    if raw_dtype and raw_dtype not in {"tool_call", "final", "replan", "ask_user", "wait"}:
+                        from agent.models.base import KNOWN_COMPUTER_TOOLS
+                        if (allowed_tool_names and raw_dtype in allowed_tool_names) or raw_dtype in KNOWN_COMPUTER_TOOLS or decision.get("arguments") is not None:
+                            print(f"[DECISION AUTO-REPAIR] Normalizing computer action '{raw_dtype}' to tool_call.")
+                            decision["tool_name"] = raw_dtype
+                            decision["decision_type"] = "tool_call"
+                            decision["type"] = "tool_call"
+                            if "arguments" not in decision:
+                                decision["arguments"] = decision.get("args") or decision.get("parameters") or {}
+
+                is_valid, err_msg = validate_model_decision(decision, allowed_tools=allowed_tool_names)
                 if not is_valid:
                     raise ValueError(f"Model returned invalid decision: {err_msg}")
                     
@@ -322,7 +337,15 @@ class AgentLoop:
                     import json
                     print(f"  Tool Arguments: {json.dumps(decision.get('arguments'))}")
                     
-                await self._emit_event("task.decision", f"Selected action type: {decision['decision_type']}", decision)
+                from agent.core.layman_formatter import format_layman_decision, format_layman_action
+                dec_icon, dec_layman = format_layman_decision(decision)
+                await self._emit_event("task.decision", dec_layman, {
+                    "decision_type": decision.get("decision_type"),
+                    "tool_name": decision.get("tool_name"),
+                    "icon": dec_icon,
+                    "layman_message": dec_layman,
+                    "decision": decision
+                })
 
                 # 6. DECISION ROUTER
                 dtype = decision["decision_type"]
@@ -332,17 +355,26 @@ class AgentLoop:
                     self.state_tracker.update_status("completed")
                     if self.task_manager:
                         self.task_manager.update_task_status(self.state_tracker.task_id, "completed")
-                    await self._emit_event("task.completed", decision.get("message", "Task finished successfully!"))
+                    final_msg = decision.get("message", "Task finished successfully!")
+                    await self._emit_event("task.completed", final_msg, {
+                        "icon": "✅",
+                        "layman_message": final_msg
+                    })
                     return
                     
                 # --- replan decision ---
                 elif dtype == "replan":
                     self.state_tracker.update_status("planning")
-                    await self._emit_event("task.replanning", f"Replanning requested: {decision.get('reason')}")
+                    replan_reason = decision.get("reason", "Adjusting plan to achieve goal.")
+                    await self._emit_event("task.replanning", f"Adjusting approach: {replan_reason}", {
+                        "icon": "🔄",
+                        "layman_message": f"Adjusting approach: {replan_reason}",
+                        "reason": replan_reason
+                    })
                     
                     new_steps = self.planner.create_high_level_plan(task)
                     self.state_tracker.set_structured_steps(new_steps)
-                    await self._emit_event("task.plan_updated", "Plan re-decomposed.", {"steps": new_steps})
+                    await self._emit_event("task.plan_updated", "Checklist updated.", {"steps": new_steps})
                     consecutive_replans += 1
                     await asyncio.sleep(0.5)
                     continue
@@ -351,29 +383,37 @@ class AgentLoop:
                 elif dtype == "ask_user":
                     question = decision.get("question", "Agent requested clarification.")
                     self.state_tracker.update_status("waiting_user")
-                    await self._emit_event("task.waiting_user", f"Question: {question}", {"question": question})
+                    await self._emit_event("task.waiting_user", question, {
+                        "question": question,
+                        "icon": "❓",
+                        "layman_message": question
+                    })
                     
-                    # Create future to wait for user answer
+                    # Create future to wait for user answer (Extended to 300s for comfortable human interaction)
                     self._user_response_future = asyncio.get_running_loop().create_future()
                     try:
-                        # Default user answer timeout is 60s (Requirement 20)
-                        user_text = await asyncio.wait_for(self._user_response_future, timeout=60.0)
+                        user_text = await asyncio.wait_for(self._user_response_future, timeout=300.0)
                         
                         # Add user answer to history memory
                         self.state_tracker.add_action_history("ask_user", {"question": question}, "completed", error_message=f"User answer: {user_text}")
-                        await self._emit_event("status_change", f"Resuming task with answer: {user_text}")
+                        await self._emit_event("status_change", f"Got it! Resuming task with your response: {user_text}", {
+                            "icon": "💬",
+                            "layman_message": f"Got it! Resuming with your response: '{user_text}'"
+                        })
                     except asyncio.TimeoutError:
                         self._user_response_future = None
-                        raise TimeoutError(f"User did not answer within 60 seconds.")
+                        raise TimeoutError("No response received from user within 5 minutes.")
                     continue
                     
                 # --- wait decision ---
                 elif dtype == "wait":
                     wait_seconds = float(decision.get("duration_seconds", 2.0))
-                    # Avoid unbounded wait
                     wait_seconds = min(wait_seconds, 15.0)
                     
-                    await self._emit_event("status_change", f"Waiting for {wait_seconds} seconds...")
+                    await self._emit_event("status_change", f"Waiting for {wait_seconds:.1f}s for the screen to settle...", {
+                        "icon": "⏳",
+                        "layman_message": f"Waiting {wait_seconds:.1f}s for window to finish loading..."
+                    })
                     await asyncio.sleep(wait_seconds)
                     continue
 
@@ -397,7 +437,6 @@ class AgentLoop:
                     if not is_valid:
                         err_text = f"Action validation rejected: {err_msg}"
                         await self._emit_event("tool.failed", err_text, {"tool": tool_name})
-                        # Fail-safe record to history
                         self.state_tracker.add_action_history(tool_name, args, "failed", err_text, 0, verification_status="verification_failed")
                         raise ValueError(err_text)
                     
@@ -405,6 +444,9 @@ class AgentLoop:
                     recent_actions = self.state_tracker.action_history[-3:]
                     if len(recent_actions) >= 3 and all(a.get("action") == tool_name and a.get("parameters") == args and a.get("status") == "failed" for a in recent_actions):
                         raise RuntimeError(f"Loop protection triggered: Repeated execution failures for tool '{tool_name}' with arguments {args}.")
+
+                    # Format friendly layman action
+                    tool_icon, tool_layman = format_layman_action(tool_name, args)
 
                     # Create formal Action instance with unique action_id and task_id
                     action = Action(
@@ -421,13 +463,22 @@ class AgentLoop:
 
                     # 3. Check permission & Act
                     self.state_tracker.update_status("waiting_permission")
-                    await self._emit_event("tool.requested", f"Action request: {tool_name}", {"tool_call": {"tool_name": tool_name, "arguments": args, "call_id": action.action_id, "action_id": action.action_id}})
+                    await self._emit_event("tool.requested", f"Permission request: {tool_layman}", {
+                        "tool_call": {"tool_name": tool_name, "arguments": args, "call_id": action.action_id, "action_id": action.action_id},
+                        "icon": tool_icon,
+                        "layman_message": tool_layman
+                    })
                     
                     if active_step_id:
                         self.state_tracker.start_step(active_step_id, {"tool_name": tool_name, "arguments": args, "call_id": action.action_id, "action_id": action.action_id})
                     
                     self.state_tracker.update_status("acting")
-                    await self._emit_event("tool.started", f"Acting: executing {tool_name}")
+                    await self._emit_event("tool.started", tool_layman, {
+                        "tool_name": tool_name,
+                        "arguments": args,
+                        "icon": tool_icon,
+                        "layman_message": tool_layman
+                    })
                     
                     active_win_before = win32_utils.get_active_window_details()
                     start_time = time.time()
@@ -538,12 +589,24 @@ class AgentLoop:
 
                     # Verify outcome
                     if result["success"]:
-                        await self._emit_event("tool.completed", f"Action completed: {tool_name}", {"duration_ms": duration_ms, "action_id": action.action_id})
+                        await self._emit_event("tool.completed", f"Completed: {tool_layman}", {
+                            "duration_ms": duration_ms,
+                            "action_id": action.action_id,
+                            "tool_name": tool_name,
+                            "icon": "✔",
+                            "layman_message": f"Completed: {tool_layman}"
+                        })
                         if active_step_id:
                             self.state_tracker.complete_step(active_step_id)
                         consecutive_replans = 0 # reset replans on success
                     else:
-                        await self._emit_event("tool.failed", f"Action failed: {result['error']}", {"duration_ms": duration_ms, "action_id": action.action_id})
+                        await self._emit_event("tool.failed", f"Issue encountered: {result.get('error', 'Action did not complete')}", {
+                            "duration_ms": duration_ms,
+                            "action_id": action.action_id,
+                            "tool_name": tool_name,
+                            "icon": "⚠️",
+                            "layman_message": f"Issue encountered: {result.get('error', 'Action did not complete')}"
+                        })
                         if active_step_id:
                             self.state_tracker.fail_step(active_step_id)
 

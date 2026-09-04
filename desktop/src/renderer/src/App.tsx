@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import orbitLogo from './assets/orbit-logo.png'
 
 interface Step {
   step_id: string
@@ -51,6 +52,46 @@ interface PermissionRequest {
   arguments: any
 }
 
+interface AttachmentItem {
+  id: string
+  filename: string
+  file_type: string
+  size_str: string
+  size_bytes?: number
+  file_path?: string
+  extracted_text?: string
+  image_base64?: string
+  is_image?: boolean
+  preview_url?: string
+}
+
+interface OrbitLaymanStep {
+  id: string
+  text: string
+  status: 'completed' | 'running' | 'failed' | 'pending'
+}
+
+interface OrbitMessage {
+  id: string
+  sender: 'user' | 'orbit'
+  type: 'user_prompt' | 'task_progress' | 'info'
+  text?: string
+  taskText?: string
+  task_id?: string
+  timestamp: string
+  attachments?: AttachmentItem[]
+  
+  // Real-time task progress state
+  status?: 'planning' | 'acting' | 'waiting_user' | 'paused' | 'completed' | 'failed' | 'cancelled'
+  currentLaymanStatus?: string
+  laymanSteps?: OrbitLaymanStep[]
+  elapsedSeconds?: number
+  startTime?: number
+  question?: string
+  questionAnswer?: string
+  errorMessage?: string
+}
+
 interface OfflineModelSpec {
   name: string;
   tag: string;
@@ -80,7 +121,6 @@ function App(): React.JSX.Element {
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'unavailable'>('connecting')
   const [reconnectAttempts, setReconnectAttempts] = useState(0)
   const [activeTab, setActiveTab] = useState<'control' | 'security' | 'workspace' | 'skills' | 'settings' | 'logs'>('control')
-  const [showLoopActivity, setShowLoopActivity] = useState(false)
   const [takeoverLoading, setTakeoverLoading] = useState(false)
   const [installedApps, setInstalledApps] = useState<{name: string, version: string, publisher: string, key: string}[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -119,6 +159,15 @@ function App(): React.JSX.Element {
     created_at?: string
   }>>([])
   const [workspaceQuery, setWorkspaceQuery] = useState('')
+
+  // File & Context Attachments State
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([])
+  const [showAddContextMenu, setShowAddContextMenu] = useState(false)
+  const [isUploadingContext, setIsUploadingContext] = useState(false)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
+  const addContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const mediaFileInputRef = useRef<HTMLInputElement | null>(null)
+  const folderInputRef = useRef<HTMLInputElement | null>(null)
 
   // Skills & Specialists State (Phases 5 & 12)
   const [skillsSubTab, setSkillsSubTab] = useState<'skills' | 'specialists'>('skills')
@@ -164,7 +213,7 @@ function App(): React.JSX.Element {
   })
 
   // Chatbot Mode Message History & State
-  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: 'user' | 'assistant'; text: string; timestamp: string }>>(() => {
+  const [chatMessages, setChatMessages] = useState<Array<{ id: string; sender: 'user' | 'assistant'; text: string; timestamp: string; attachments?: AttachmentItem[] }>>(() => {
     try {
       const saved = localStorage.getItem('spr_saathi_chat_history')
       if (saved) return JSON.parse(saved)
@@ -173,7 +222,7 @@ function App(): React.JSX.Element {
       {
         id: 'welcome',
         sender: 'assistant',
-        text: "👋 Hello! I am **SPR SAATHI** in **Chatbot Mode** 💬.\n\nAsk me general questions, request explanations, brainstorm ideas, or generate code snippets. When you want me to autonomously perform tasks on your computer, switch to **SPR SAATHI Mode** 🤖 at the top!",
+        text: "✨ Started a **New Chat**! How can I help you today?\n\nFeel free to ask questions, brainstorm ideas, request explanations, or generate code.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]
@@ -189,6 +238,71 @@ function App(): React.JSX.Element {
       chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [chatMessages, appMode])
+
+  // ORBIT Autonomous Agent Chat & Live Progress State
+  const [orbitMessages, setOrbitMessages] = useState<OrbitMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem('spr_saathi_orbit_history')
+      if (saved) return JSON.parse(saved)
+    } catch (e) {}
+    return [
+      {
+        id: 'orbit_welcome',
+        sender: 'orbit',
+        type: 'info',
+        text: "👋 Hi! I'm **ORBIT**, your autonomous computer assistant.\n\nTell me what you'd like me to do on your computer (e.g. *\"Open Paint and draw a portrait of Mahatma Gandhi\"* or *\"Organize my files\"*).\n\nIf anything is unclear, I'll ask you questions right here before or while doing the task, and I'll keep you updated in real-time every step of the way!",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ]
+  })
+  const [inlineClarificationAnswer, setInlineClarificationAnswer] = useState('')
+  const orbitChatEndRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('spr_saathi_orbit_history', JSON.stringify(orbitMessages.slice(-50)))
+    } catch (e) {}
+    if (appMode === 'saathi') {
+      orbitChatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [orbitMessages, appMode])
+
+  // Helper to format digital seconds timer
+  const formatTimer = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${m}:${s < 10 ? '0' : ''}${s}`
+  }
+
+  // Helper to safely update the active task_progress card in orbitMessages
+  const updateLastTaskCard = (
+    messages: OrbitMessage[],
+    updater: (card: OrbitMessage) => OrbitMessage
+  ): OrbitMessage[] => {
+    const lastIdx = messages.map(m => m.type).lastIndexOf('task_progress')
+    if (lastIdx === -1) return messages
+    const updated = [...messages]
+    updated[lastIdx] = updater(updated[lastIdx])
+    return updated
+  }
+
+
+  // Conversation History State
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    return localStorage.getItem('spr_saathi_active_session_id') || null
+  })
+  const [conversations, setConversations] = useState<Array<{
+    id: string
+    title: string
+    created_at: string
+    updated_at: string
+    model: string
+    message_count: number
+    snippet?: string
+  }>>([])
+  const [showHistoryDrawer, setShowHistoryDrawer] = useState(false)
+  const [historySearchQuery, setHistorySearchQuery] = useState('')
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   // Model Manager State
   const [managerTab, setManagerTab] = useState<'offline' | 'online'>('offline')
@@ -318,6 +432,32 @@ function App(): React.JSX.Element {
     error_message: null
   })
 
+  // Real-time execution timer for active task progress card
+  useEffect(() => {
+    let timer: NodeJS.Timeout | null = null
+    const isTaskActive = agentState.status === 'running' || agentState.status === 'planning' || agentState.status === 'acting' || agentState.status === 'waiting_user' || agentState.status === 'waiting_permission' || agentState.status === 'verifying'
+    
+    if (isTaskActive) {
+      timer = setInterval(() => {
+        setOrbitMessages(prev => {
+          const lastIdx = prev.map(m => m.type).lastIndexOf('task_progress')
+          if (lastIdx === -1) return prev
+          const target = prev[lastIdx]
+          if (target.status === 'completed' || target.status === 'failed' || target.status === 'cancelled') return prev
+          
+          const nextSeconds = (target.elapsedSeconds || 0) + 1
+          const updated = [...prev]
+          updated[lastIdx] = { ...target, elapsedSeconds: nextSeconds }
+          return updated
+        })
+      }, 1000)
+    }
+
+    return () => {
+      if (timer) clearInterval(timer)
+    }
+  }, [agentState.status])
+
   // Text Inputs & Event logs
   const [taskInput, setTaskInput] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -326,15 +466,36 @@ function App(): React.JSX.Element {
   const [userQuestion, setUserQuestion] = useState<string | null>(null)
 
   const respondUserQuestion = async (response: string) => {
-    if (port === null) return
+    if (port === null || !response.trim()) return
+    const replyText = response.trim()
     try {
+      // 1. Post user reply bubble into orbitMessages
+      const replyMsg: OrbitMessage = {
+        id: `orbit_reply_${Date.now()}`,
+        sender: 'user',
+        type: 'user_prompt',
+        text: replyText,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+      
+      setOrbitMessages(prev => {
+        const withUser = [...prev, replyMsg]
+        return updateLastTaskCard(withUser, card => ({
+          ...card,
+          status: 'acting',
+          questionAnswer: replyText,
+          currentLaymanStatus: `⚡ Processing your clarification: "${replyText}"...`
+        }))
+      })
+
       const res = await fetch(`http://127.0.0.1:${port}/api/task/respond_question`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ response })
+        body: JSON.stringify({ response: replyText })
       })
       if (res.ok) {
         setUserQuestion(null)
+        setInlineClarificationAnswer('')
       }
     } catch (e) {
       console.error('Respond user question error:', e)
@@ -360,6 +521,16 @@ function App(): React.JSX.Element {
         console.error('[Renderer] Failed to resolve port:', err)
         setBackendStatus('unavailable')
       })
+
+    if (window.api.onBackendPortUpdated) {
+      const unsub = window.api.onBackendPortUpdated((newPort) => {
+        console.log(`[Renderer] Received updated backend port: ${newPort}`)
+        setPort(newPort)
+        setBackendStatus('connecting')
+      })
+      return unsub
+    }
+    return undefined
   }, [])
 
   // 2. Connect WebSocket when port is resolved
@@ -467,6 +638,11 @@ function App(): React.JSX.Element {
             case 'plan':
             case 'task.planning':
               setAgentState((prev) => ({ ...prev, status: 'planning' }))
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                ...card,
+                status: 'planning',
+                currentLaymanStatus: data.message || '🧠 Orbit is analyzing your request and planning the desktop actions...'
+              })))
               addFeedItem('plan', data.message, timestamp)
               break
             case 'task.plan_updated':
@@ -483,6 +659,15 @@ function App(): React.JSX.Element {
               }
               break
             case 'task.decision':
+              {
+                const laymanAct = data.payload?.layman_action || data.message
+                if (laymanAct) {
+                  setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                    ...card,
+                    currentLaymanStatus: laymanAct
+                  })))
+                }
+              }
               addFeedItem('act', `Decision: ${data.message}`, timestamp)
               break
             case 'permission_required':
@@ -503,6 +688,24 @@ function App(): React.JSX.Element {
             case 'act':
             case 'tool.started':
               setAgentState((prev) => ({ ...prev, status: 'acting' }))
+              {
+                const laymanDesc = data.payload?.layman_action || data.message || 'Executing action...'
+                setOrbitMessages(prev => updateLastTaskCard(prev, card => {
+                  const existingSteps = card.laymanSteps || []
+                  const updatedSteps: OrbitLaymanStep[] = existingSteps.map(s => s.status === 'running' ? { ...s, status: 'completed' } : s)
+                  updatedSteps.push({
+                    id: `step_${Date.now()}_${Math.random()}`,
+                    text: laymanDesc,
+                    status: 'running'
+                  })
+                  return {
+                    ...card,
+                    status: 'acting',
+                    currentLaymanStatus: laymanDesc,
+                    laymanSteps: updatedSteps
+                  }
+                }))
+              }
               if (data.payload?.tool_call) {
                 const tc = data.payload.tool_call
                 setAgentState((prev) => ({
@@ -527,6 +730,11 @@ function App(): React.JSX.Element {
                 takeover_active: true, 
                 status: 'paused'
               }))
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                ...card,
+                status: 'paused',
+                currentLaymanStatus: '⏸️ Paused - You have taken manual control.'
+              })))
               addFeedItem('takeover', data.message, timestamp)
               break
             case 'control.release_requested':
@@ -535,6 +743,11 @@ function App(): React.JSX.Element {
                 ...prev, 
                 status: 'resuming'
               }))
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                ...card,
+                status: 'acting',
+                currentLaymanStatus: '⚡ Resuming desktop control...'
+              })))
               addFeedItem('observe', data.message, timestamp)
               break
             case 'task.resumed':
@@ -543,6 +756,11 @@ function App(): React.JSX.Element {
                 takeover_active: false, 
                 status: 'running'
               }))
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                ...card,
+                status: 'acting',
+                currentLaymanStatus: '⚡ Orbit has resumed your task.'
+              })))
               addFeedItem('success', data.message, timestamp)
               break
             case 'stop':
@@ -554,6 +772,11 @@ function App(): React.JSX.Element {
               }))
               setActivePrompt(null)
               setUserQuestion(null)
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                ...card,
+                status: 'cancelled',
+                currentLaymanStatus: '🛑 Task stopped by user.'
+              })))
               addFeedItem('error', data.message, timestamp)
               break
             case 'log':
@@ -570,6 +793,17 @@ function App(): React.JSX.Element {
               }))
               setActivePrompt(null)
               setUserQuestion(null)
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => {
+                const existingSteps = card.laymanSteps || []
+                const updatedSteps: OrbitLaymanStep[] = existingSteps.map(s => s.status === 'running' ? { ...s, status: 'failed' } : s)
+                return {
+                  ...card,
+                  status: 'failed',
+                  currentLaymanStatus: `⚠️ ${data.message || 'Task stopped due to an issue.'}`,
+                  errorMessage: data.message,
+                  laymanSteps: updatedSteps
+                }
+              }))
               addFeedItem('error', data.message, timestamp)
               break
             case 'task_completed':
@@ -581,6 +815,16 @@ function App(): React.JSX.Element {
               }))
               setActivePrompt(null)
               setUserQuestion(null)
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => {
+                const existingSteps = card.laymanSteps || []
+                const updatedSteps: OrbitLaymanStep[] = existingSteps.map(s => ({ ...s, status: 'completed' }))
+                return {
+                  ...card,
+                  status: 'completed',
+                  currentLaymanStatus: `🎉 All done! ${data.message || 'Task completed successfully.'}`,
+                  laymanSteps: updatedSteps
+                }
+              }))
               addFeedItem('success', data.message, timestamp)
               break
             case 'tool.completed':
@@ -588,12 +832,27 @@ function App(): React.JSX.Element {
                 ...prev,
                 steps: prev.steps.map((s) => s.status === 'running' ? { ...s, status: 'completed' } : s)
               }))
+              setOrbitMessages(prev => updateLastTaskCard(prev, card => {
+                const existingSteps = card.laymanSteps || []
+                const updatedSteps: OrbitLaymanStep[] = existingSteps.map(s => s.status === 'running' ? { ...s, status: 'completed' } : s)
+                return {
+                  ...card,
+                  laymanSteps: updatedSteps
+                }
+              }))
               addFeedItem('success', data.message, timestamp)
               break
             case 'task.waiting_user':
               setAgentState((prev) => ({ ...prev, status: 'waiting_user' }))
-              if (data.payload?.question) {
-                setUserQuestion(data.payload.question)
+              {
+                const q = data.payload?.question || data.message || 'I need clarification to proceed.'
+                setUserQuestion(q)
+                setOrbitMessages(prev => updateLastTaskCard(prev, card => ({
+                  ...card,
+                  status: 'waiting_user',
+                  question: q,
+                  currentLaymanStatus: '❓ Orbit needs clarification from you to proceed.'
+                })))
               }
               addFeedItem('takeover', data.message, timestamp)
               break
@@ -856,21 +1115,316 @@ function App(): React.JSX.Element {
     }
   }
 
+  // Conversation History Handlers
+  const loadConversations = async () => {
+    if (port === null) return
+    try {
+      setHistoryLoading(true)
+      const res = await fetch(`http://127.0.0.1:${port}/api/conversations`)
+      if (res.ok) {
+        const data = await res.json()
+        setConversations(data.conversations || [])
+      }
+    } catch (e) {
+      console.error('Failed to load conversations:', e)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const handleSelectConversation = async (sessionId: string) => {
+    if (port === null) return
+    try {
+      setChatLoading(true)
+      const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${sessionId}`)
+      if (res.ok) {
+        const data = await res.json()
+        const conv = data.conversation
+        if (conv && Array.isArray(conv.messages)) {
+          const mapped = conv.messages.map((m: any) => ({
+            id: m.id || `msg_${Date.now()}_${Math.random()}`,
+            sender: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
+            text: m.content,
+            timestamp: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+          }))
+          setChatMessages(mapped.length > 0 ? mapped : [
+            {
+              id: 'welcome',
+              sender: 'assistant' as const,
+              text: `📂 Opened conversation: **${conv.title || 'Untitled'}**.\n\nYou can continue this conversation below.`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            }
+          ])
+          setActiveSessionId(sessionId)
+          localStorage.setItem('spr_saathi_active_session_id', sessionId)
+          setAppMode('chat')
+          localStorage.setItem('spr_saathi_mode', 'chat')
+          setActiveTab('control')
+          setShowHistoryDrawer(false)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load conversation messages:', e)
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const handleNewChat = () => {
+    setActiveSessionId(null)
+    localStorage.removeItem('spr_saathi_active_session_id')
+    setAppMode('chat')
+    localStorage.setItem('spr_saathi_mode', 'chat')
+    setActiveTab('control')
+    setTaskInput('')
+    setAttachments([])
+    setChatMessages([
+      {
+        id: `welcome_${Date.now()}`,
+        sender: 'assistant' as const,
+        text: "✨ Started a **New Chat**! How can I help you today?\n\nFeel free to ask questions, brainstorm ideas, request explanations, or generate code.",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ])
+    setShowHistoryDrawer(false)
+    setShowChatOptionsMenu(false)
+    if (port !== null) {
+      fetch(`http://127.0.0.1:${port}/api/chat/clear`, { method: 'POST' }).catch(() => {})
+    }
+  }
+
+  const handleDeleteConversation = async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (port === null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${sessionId}`, { method: 'DELETE' })
+      if (res.ok) {
+        setConversations(prev => prev.filter(c => c.id !== sessionId))
+        if (activeSessionId === sessionId) {
+          handleNewChat()
+        }
+      }
+    } catch (err) {
+      console.error('Failed to delete conversation:', err)
+    }
+  }
+
+  const filteredConversations = useMemo(() => {
+    if (!historySearchQuery.trim()) return conversations
+    const q = historySearchQuery.toLowerCase()
+    return conversations.filter(c => 
+      c.title.toLowerCase().includes(q) || 
+      (c.snippet && c.snippet.toLowerCase().includes(q))
+    )
+  }, [conversations, historySearchQuery])
+
+  useEffect(() => {
+    if (port !== null && appMode === 'chat') {
+      loadConversations()
+    }
+  }, [port, appMode])
+
+  // Chat Options & Rename State
+  const chatOptionsRef = useRef<HTMLDivElement | null>(null)
+  const [showChatOptionsMenu, setShowChatOptionsMenu] = useState(false)
+  const [isRenamingChat, setIsRenamingChat] = useState(false)
+  const [chatRenameInput, setChatRenameInput] = useState('')
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (chatOptionsRef.current && !chatOptionsRef.current.contains(e.target as Node)) {
+        setShowChatOptionsMenu(false)
+      }
+      if (addContextMenuRef.current && !addContextMenuRef.current.contains(e.target as Node)) {
+        setShowAddContextMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const formatFileSize = (bytes: number): string => {
+    if (!bytes || bytes <= 0) return '0 B'
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  const detectFileTypeFromFilename = (filename: string, mimeType?: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase() || ''
+    if (mimeType?.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext)) return 'image'
+    if (ext === 'pdf' || mimeType?.includes('pdf')) return 'pdf'
+    if (['doc', 'docx'].includes(ext) || mimeType?.includes('word')) return 'docx'
+    if (['txt', 'md', 'json', 'csv', 'py', 'ts', 'tsx', 'js', 'jsx', 'html', 'css', 'yaml', 'yml', 'log', 'xml', 'ini', 'env'].includes(ext)) return 'text'
+    return 'file'
+  }
+
+  const handleFilesUpload = async (fileList: FileList | File[]) => {
+    if (!fileList || fileList.length === 0) return
+    setIsUploadingContext(true)
+    setShowAddContextMenu(false)
+
+    try {
+      const filesArray = Array.from(fileList)
+
+      // 1. Immediately create client-side attachment items so the file shows up in Orbit instantly!
+      const initialItems: AttachmentItem[] = await Promise.all(
+        filesArray.map(async (file, idx) => {
+          const isImg = Boolean(file.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name))
+          let preview: string | undefined = undefined
+          let imgB64: string | undefined = undefined
+          let txtContent: string | undefined = undefined
+
+          if (isImg) {
+            try {
+              preview = URL.createObjectURL(file)
+              imgB64 = await new Promise<string>((resolve) => {
+                const reader = new FileReader()
+                reader.onloadend = () => {
+                  const res = reader.result as string
+                  const base64 = res.includes(',') ? res.split(',')[1] : res
+                  resolve(base64)
+                }
+                reader.onerror = () => resolve('')
+                reader.readAsDataURL(file)
+              })
+            } catch (e) {
+              console.warn('Image preview creation error:', e)
+            }
+          } else if (file.size < 500000 && /\.(txt|md|json|csv|py|ts|tsx|js|jsx|html|css|yaml|yml|log|xml|ini|env)$/i.test(file.name)) {
+            try {
+              txtContent = await file.text()
+            } catch (e) {
+              console.warn('Text extraction error:', e)
+            }
+          }
+
+          const absPath = (file as any).path || ''
+          const ftype = detectFileTypeFromFilename(file.name, file.type)
+
+          return {
+            id: `att_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+            filename: file.name,
+            file_type: ftype,
+            size_bytes: file.size,
+            size_str: formatFileSize(file.size),
+            file_path: absPath,
+            image_base64: imgB64,
+            extracted_text: txtContent,
+            is_image: isImg,
+            preview_url: preview
+          }
+        })
+      )
+
+      // Add to attachments immediately!
+      setAttachments(prev => [...prev, ...initialItems])
+
+      // 2. Also attempt backend upload & enrichment if backend port is available
+      if (port !== null) {
+        try {
+          const formData = new FormData()
+          filesArray.forEach(f => {
+            formData.append('files', f)
+          })
+
+          const res = await fetch(`http://127.0.0.1:${port}/api/context/upload`, {
+            method: 'POST',
+            body: formData
+          })
+
+          if (res.ok) {
+            const data = await res.json()
+            if (data.files && Array.isArray(data.files)) {
+              setAttachments(prev => prev.map(item => {
+                const matched = data.files.find((f: any) => f.filename === item.filename)
+                if (matched) {
+                  return {
+                    ...item,
+                    ...matched,
+                    // Preserve client-side image preview and Base64 if needed
+                    preview_url: item.preview_url || matched.preview_url,
+                    image_base64: item.image_base64 || matched.image_base64
+                  }
+                }
+                return item
+              }))
+            }
+          }
+        } catch (backendErr) {
+          console.warn('Backend context upload skipped, retained client-side attachments:', backendErr)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to process context files:', e)
+    } finally {
+      setIsUploadingContext(false)
+      if (mediaFileInputRef.current) mediaFileInputRef.current.value = ''
+      if (folderInputRef.current) folderInputRef.current.value = ''
+    }
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingOver(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingOver(false)
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesUpload(e.dataTransfer.files)
+    }
+  }
+
+  const handleRenameActiveConversation = async (newTitle: string) => {
+    if (!activeSessionId || !port || !newTitle.trim()) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/conversations/${activeSessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle.trim() })
+      })
+      if (res.ok) {
+        setConversations(prev => prev.map(c => c.id === activeSessionId ? { ...c, title: newTitle.trim() } : c))
+      }
+    } catch (e) {
+      console.error('Failed to rename conversation:', e)
+    }
+  }
+
+  const handleCopyChatTranscript = () => {
+    const text = chatMessages.map(m => `[${m.sender === 'user' ? 'User' : 'ORBIT'} - ${m.timestamp}]\n${m.text}`).join('\n\n')
+    navigator.clipboard.writeText(text)
+    setShowChatOptionsMenu(false)
+  }
+
   // Chatbot Mode Messaging Handlers
   const handleSendChatMessage = async (inputCommand?: string) => {
     const command = inputCommand !== undefined ? inputCommand : taskInput
-    if (!command.trim() || port === null || chatLoading) return
+    if ((!command.trim() && attachments.length === 0) || port === null || chatLoading) return
 
+    const currentAttachments = [...attachments]
     const userMsg = {
       id: `msg_${Date.now()}`,
       sender: 'user' as const,
       text: command,
+      attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
 
     setChatMessages(prev => [...prev, userMsg])
     if (inputCommand === undefined) {
       setTaskInput('')
+      setAttachments([])
     }
     setChatLoading(true)
 
@@ -884,13 +1438,19 @@ function App(): React.JSX.Element {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: command,
-          history: historyPayload
+          message: command || "Please analyze the attached document(s) and provide an overview.",
+          history: historyPayload,
+          session_id: activeSessionId || undefined,
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined
         })
       })
 
       if (res.ok) {
         const data = await res.json()
+        if (data.session_id && data.session_id !== activeSessionId) {
+          setActiveSessionId(data.session_id)
+          localStorage.setItem('spr_saathi_active_session_id', data.session_id)
+        }
         const assistantMsg = {
           id: `msg_ai_${Date.now()}`,
           sender: 'assistant' as const,
@@ -898,6 +1458,7 @@ function App(): React.JSX.Element {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
         setChatMessages(prev => [...prev, assistantMsg])
+        loadConversations()
       } else {
         const data = await res.json().catch(() => ({}))
         const errorMsg = {
@@ -922,6 +1483,13 @@ function App(): React.JSX.Element {
   }
 
   const handleClearChat = async () => {
+    setActiveSessionId(null)
+    localStorage.removeItem('spr_saathi_active_session_id')
+    setAppMode('chat')
+    localStorage.setItem('spr_saathi_mode', 'chat')
+    setActiveTab('control')
+    setTaskInput('')
+    setAttachments([])
     setChatMessages([
       {
         id: `welcome_${Date.now()}`,
@@ -1030,31 +1598,92 @@ function App(): React.JSX.Element {
   // API wrappers (Unified Task Submission)
   const triggerStartTask = async (inputCommand?: string) => {
     const command = inputCommand !== undefined ? inputCommand : taskInput
-    if (!command.trim() || port === null) return
+    if ((!command.trim() && attachments.length === 0) || port === null) return
+    const currentAttachments = [...attachments]
+    const taskText = command.trim() || (currentAttachments.length > 0 ? `Inspect and process attached file(s): ${currentAttachments.map(a => a.filename).join(', ')}` : '')
+    
+    // 1. Post User message & Live Task Progress card into Orbit chat thread
+    const userMsgId = `orbit_user_${Date.now()}`
+    const taskCardId = `orbit_card_${Date.now()}`
+
+    const userMsg: OrbitMessage = {
+      id: userMsgId,
+      sender: 'user',
+      type: 'user_prompt',
+      text: taskText,
+      attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+
+    const liveCard: OrbitMessage = {
+      id: taskCardId,
+      sender: 'orbit',
+      type: 'task_progress',
+      taskText: taskText,
+      status: 'planning',
+      currentLaymanStatus: '🧠 Orbit is analyzing your request and preparing the desktop workspace...',
+      laymanSteps: [
+        { id: 'step_init', text: 'Received instruction and preparing workspace', status: 'completed' }
+      ],
+      elapsedSeconds: 0,
+      startTime: Date.now(),
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+
+    setOrbitMessages(prev => [...prev, userMsg, liveCard])
+    if (inputCommand === undefined) {
+      setTaskInput('')
+      setAttachments([])
+    }
+
+    addFeedItem('user', taskText, new Date().toISOString())
     try {
-      addFeedItem('user', command, new Date().toISOString())
       const res = await fetch(`http://127.0.0.1:${port}/api/task/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: command })
+        body: JSON.stringify({ 
+          task: taskText,
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined
+        })
       })
       const data = await res.json()
       if (res.ok) {
         setAgentState((prev) => ({
           ...prev,
-          current_task: command,
+          current_task: taskText,
           task_id: data.task_id,
           steps: [],
           error_message: null
         }))
-        if (inputCommand === undefined) {
-          setTaskInput('')
-        }
       } else {
         addFeedItem('error', `Start Failed: ${data.detail}`, new Date().toISOString())
+        setOrbitMessages(prev => {
+          const lastIdx = prev.map(m => m.id).lastIndexOf(taskCardId)
+          if (lastIdx === -1) return prev
+          const updated = [...prev]
+          updated[lastIdx] = {
+            ...updated[lastIdx],
+            status: 'failed',
+            currentLaymanStatus: `⚠️ Could not start: ${data.detail || 'Service unavailable'}`,
+            errorMessage: data.detail || 'Service unavailable'
+          }
+          return updated
+        })
       }
-    } catch (e) {
+    } catch (e: any) {
       addFeedItem('error', `Network Error: ${e}`, new Date().toISOString())
+      setOrbitMessages(prev => {
+        const lastIdx = prev.map(m => m.id).lastIndexOf(taskCardId)
+        if (lastIdx === -1) return prev
+        const updated = [...prev]
+        updated[lastIdx] = {
+          ...updated[lastIdx],
+          status: 'failed',
+          currentLaymanStatus: '⚠️ Could not reach agent runtime service.',
+          errorMessage: String(e)
+        }
+        return updated
+      })
     }
   }
 
@@ -1065,6 +1694,32 @@ function App(): React.JSX.Element {
     } catch (e) {
       console.error('Stop request error:', e)
     }
+  }
+
+  const handleNewOrbitChat = () => {
+    triggerStopTask()
+    setUserQuestion(null)
+    setActivePrompt(null)
+    setAgentState({
+      status: 'idle',
+      current_task: null,
+      task_id: null,
+      active_step_id: null,
+      steps: [],
+      takeover_active: false,
+      error_message: null
+    })
+    setOrbitMessages([
+      {
+        id: `orbit_welcome_${Date.now()}`,
+        sender: 'orbit',
+        type: 'info',
+        text: "✨ Started a **New ORBIT Session**! What task would you like me to perform on your computer?",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ])
+    setTaskInput('')
+    setAttachments([])
   }
 
   const toggleTakeover = async () => {
@@ -1381,7 +2036,7 @@ function App(): React.JSX.Element {
     }
   }
 
-  // Reload / Refresh Handler
+  // Reload / Refresh Handler (General / Chatbot)
   const handleReload = async () => {
     if (refreshing) return
     setRefreshing(true)
@@ -1402,205 +2057,598 @@ function App(): React.JSX.Element {
     }
   }
 
+  // Dedicated ORBIT AI Reload & Reset Handler
+  const handleReloadOrbit = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      if (backendStatus === 'disconnected' || backendStatus === 'unavailable') {
+        setReconnectAttempts((prev) => prev + 1)
+      }
+      // 1. Abort/stop active agent execution if any task is running
+      if (port !== null) {
+        await fetch(`http://127.0.0.1:${port}/api/task/stop`, { method: 'POST' }).catch(() => {})
+      }
+      // 2. Clear client-side agent state, steps, inputs, and attachments
+      setAgentState({
+        status: 'idle',
+        current_task: null,
+        task_id: null,
+        active_step_id: null,
+        steps: [],
+        takeover_active: false,
+        error_message: null,
+        computer_state: null
+      })
+      setActivePrompt(null)
+      setUserQuestion(null)
+      setTaskInput('')
+      setAttachments([])
+      setOrbitMessages(prev => [
+        ...prev,
+        {
+          id: `orbit_reload_${Date.now()}`,
+          sender: 'orbit',
+          type: 'info',
+          text: "🔄 **ORBIT AI reloaded and reset to standby.** Ready for your next desktop instruction!",
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }
+      ])
+
+      // 3. Re-query backend for state, metrics, models
+      if (port !== null) {
+        await Promise.allSettled([
+          fetchAgentState(),
+          fetchSystemMetrics(),
+          fetchOllamaModels(),
+          fetchInstalledApps()
+        ])
+      }
+      addFeedItem('observe', 'ORBIT AI reloaded and reset to standby.', new Date().toISOString())
+    } catch (e) {
+      console.error('Failed to reload ORBIT AI:', e)
+    } finally {
+      setTimeout(() => setRefreshing(false), 600)
+    }
+  }
+
   // Active status visualizer matching
   const status = agentState.status
 
   return (
     <div className="app-container">
-      {/* Header Section */}
-      <header className="app-header">
-        <div className="header-top">
-          <button
-            type="button"
-            className={`logo-section logo-btn ${refreshing ? 'refreshing' : ''}`}
-            onClick={handleReload}
-            title="Reload & Refresh Status"
-            aria-label="Reload and refresh SPR SAATHI"
-          >
-            <h1 className="app-title">SPR SAATHI</h1>
-          </button>
+      {/* Top 6-Icon Navigation Tab Bar */}
+      <nav className="top-tab-bar">
+        <button 
+          className={`top-tab-btn ${activeTab === 'control' ? 'active' : ''}`}
+          onClick={() => setActiveTab('control')}
+          title="Dashboard & Chat"
+          aria-label="Dashboard & Chat"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+        </button>
+        <button 
+          className={`top-tab-btn ${activeTab === 'security' ? 'active' : ''}`}
+          onClick={() => setActiveTab('security')}
+          title="Security & Permissions"
+          aria-label="Security & Permissions"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+        </button>
+        <button 
+          className={`top-tab-btn ${activeTab === 'settings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('settings')}
+          title="Settings & Models"
+          aria-label="Settings & Models"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06-.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        <button 
+          className={`top-tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
+          onClick={() => setActiveTab('logs')}
+          title="Execution Logs"
+          aria-label="Execution Logs"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
+        </button>
+      </nav>
 
-          {/* Top Mode Selector Slider */}
-          <div className="mode-toggle-slider-container">
+      {/* Sub-Header Row */}
+      <div className="app-sub-header">
+        {/* Left: Mode Toggle Pill [ Chatbot   SPR SAATHI ] */}
+        <div className="sub-header-left">
+          <div className="mode-toggle-pill-container">
             <button
               type="button"
-              className={`mode-toggle-btn ${appMode === 'chat' ? 'active chat' : ''}`}
+              className={`mode-pill-btn ${appMode === 'chat' ? 'active' : ''}`}
               onClick={() => {
                 setAppMode('chat')
                 localStorage.setItem('spr_saathi_mode', 'chat')
               }}
-              title="Chatbot Mode: Conversational AI assistant"
+              title="Chatbot Mode"
             >
-              <span className="mode-btn-label">Chatbot</span>
+              Chatbot
             </button>
             <button
               type="button"
-              className={`mode-toggle-btn ${appMode === 'saathi' ? 'active saathi' : ''}`}
+              className={`mode-pill-btn ${appMode === 'saathi' ? 'active' : ''}`}
               onClick={() => {
                 setAppMode('saathi')
                 localStorage.setItem('spr_saathi_mode', 'saathi')
               }}
-              title="SPR SAATHI Mode: Autonomous Computer Agent"
+              title="ORBIT Mode"
             >
-              <span className="mode-btn-label">SPR SAATHI</span>
+              <img src={orbitLogo} alt="" className="orbit-pill-icon" />
+              <span>ORBIT</span>
             </button>
           </div>
+        </div>
 
-          {/* Real-time System Metrics Indicator */}
-          {systemMetrics?.system && (
-            <div className="header-metrics-chip" title="Live CPU and Agent Memory Usage">
-              <span className="metric-item">
-                <span className={`metric-dot ${systemMetrics.system.cpu_percent > 80 ? 'alert' : ''}`}></span>
-                CPU <span className="metric-val">{Math.round(systemMetrics.system.cpu_percent)}%</span>
-              </span>
-              <span className="metric-item">
-                RAM <span className="metric-val">{Math.round(systemMetrics.memory?.rss_mb || 0)}MB</span>
-              </span>
-            </div>
-          )}
-
-          {backendStatus === 'connected' ? (
-            <div className={`header-status connected ${appMode === 'chat' ? 'chat-mode' : status}`}>
-              <span>{appMode === 'chat' ? (chatLoading ? 'Thinking...' : 'Chat Ready') : status.replace('_', ' ')}</span>
-            </div>
-          ) : backendStatus === 'connecting' ? (
-            <div className="header-status connecting">
-              <span>Connecting...</span>
-            </div>
-          ) : backendStatus === 'unavailable' ? (
-            <div className="header-status unavailable">
-              <span>Backend unavailable</span>
-            </div>
+        {/* Center: Status Pill or Inline Rename Input */}
+        <div className="sub-header-center">
+          {isRenamingChat ? (
+            <input
+              type="text"
+              className="sub-header-rename-input"
+              value={chatRenameInput}
+              onChange={(e) => setChatRenameInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (chatRenameInput.trim() && activeSessionId) {
+                    handleRenameActiveConversation(chatRenameInput.trim())
+                  }
+                  setIsRenamingChat(false)
+                } else if (e.key === 'Escape') {
+                  setIsRenamingChat(false)
+                }
+              }}
+              onBlur={() => {
+                if (chatRenameInput.trim() && activeSessionId) {
+                  handleRenameActiveConversation(chatRenameInput.trim())
+                }
+                setIsRenamingChat(false)
+              }}
+              autoFocus
+            />
           ) : (
-            <div className="header-status disconnected">
-              <span>Disconnected</span>
+            <div 
+              className="sub-header-status-badge"
+              title={
+                appMode === 'saathi'
+                  ? `ORBIT Status: ${status ? status.replace('_', ' ') : 'Agent Ready'} • CPU: ${Math.round(systemMetrics?.system?.cpu_percent || 0)}% (Click to reload ORBIT AI)`
+                  : systemMetrics?.system
+                  ? `Status: ${chatLoading ? 'Thinking...' : 'Chat Ready'} • CPU: ${Math.round(systemMetrics.system.cpu_percent)}% • RAM: ${Math.round(systemMetrics.memory?.rss_mb || 0)}MB (Click to reload)`
+                  : activeSessionId && conversations.find(c => c.id === activeSessionId)
+                  ? `${conversations.find(c => c.id === activeSessionId)?.title} (Click to reload)`
+                  : 'Click to reload status'
+              }
+              onClick={() => {
+                if (appMode === 'saathi') {
+                  handleReloadOrbit()
+                } else {
+                  handleReload()
+                }
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                if (activeSessionId && appMode === 'chat') {
+                  const cur = conversations.find(c => c.id === activeSessionId)?.title || ''
+                  setChatRenameInput(cur)
+                  setIsRenamingChat(true)
+                }
+              }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                {appMode === 'saathi' && (
+                  <img src={orbitLogo} alt="" className="orbit-pill-icon" style={{ width: '11px', height: '11px' }} />
+                )}
+                {backendStatus !== 'connected'
+                  ? backendStatus === 'connecting'
+                    ? 'Connecting...'
+                    : backendStatus === 'unavailable'
+                    ? 'Backend unavailable'
+                    : 'Disconnected'
+                  : appMode === 'chat'
+                  ? chatLoading
+                    ? 'Thinking...'
+                    : 'Chat Ready'
+                  : status
+                  ? status.replace('_', ' ')
+                  : 'Agent Ready'}
+              </span>
             </div>
           )}
         </div>
-      </header>
 
-      {/* Tab Selector Bar */}
-      <div className="tab-selector-bar">
-        <button 
-          className={`tab-button ${activeTab === 'control' ? 'active' : ''}`}
-          onClick={() => setActiveTab('control')}
-          title="Control Panel"
-        >
-          <span className="tab-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="7" height="9" />
-              <rect x="14" y="3" width="7" height="5" />
-              <rect x="14" y="12" width="7" height="9" />
-              <rect x="3" y="16" width="7" height="5" />
-            </svg>
-          </span>
-          <span className="tab-label">Control Panel</span>
-        </button>
-        <button 
-          className={`tab-button ${activeTab === 'security' ? 'active' : ''}`}
-          onClick={() => setActiveTab('security')}
-          title="Security & Apps"
-        >
-          <span className="tab-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-            </svg>
-          </span>
-          <span className="tab-label">Security & Apps</span>
-        </button>
-        <button 
-          className={`tab-button ${activeTab === 'workspace' ? 'active' : ''}`}
-          onClick={() => setActiveTab('workspace')}
-          title="Memory & Workspace Storage"
-        >
-          <span className="tab-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-            </svg>
-          </span>
-          <span className="tab-label">Memory & Files</span>
-        </button>
-        <button 
-          className={`tab-button ${activeTab === 'skills' ? 'active' : ''}`}
-          onClick={() => setActiveTab('skills')}
-          title="Skills & AI Specialists"
-        >
-          <span className="tab-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-            </svg>
-          </span>
-          <span className="tab-label">Skills & AI</span>
-        </button>
-        <button 
-          className={`tab-button ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
-          title="Settings"
-        >
-          <span className="tab-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </span>
-          <span className="tab-label">Settings</span>
-        </button>
-        <button 
-          className={`tab-button ${activeTab === 'logs' ? 'active' : ''}`}
-          onClick={() => setActiveTab('logs')}
-          title="Execution Logs"
-        >
-          <span className="tab-icon">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 17 10 11 4 5" />
-              <line x1="12" y1="19" x2="20" y2="19" />
-            </svg>
-          </span>
-          <span className="tab-label">
-            Execution Logs 
-            {feed.length > 0 && (
-              <span style={{ marginLeft: '4px', padding: '1px 5px', background: 'rgba(255, 255, 255, 0.1)', borderRadius: '10px', fontSize: '9px' }}>
-                {feed.length}
-              </span>
-            )}
-          </span>
-        </button>
+        {/* Right: Actions (🔄 Reload   + New   🕒 History   ••• More   ✕ Reset) */}
+        <div className="sub-header-right">
+          <div className="sub-header-actions">
+            {/* Dedicated Reload Button (Context-Aware: Reloads Orbit AI or Chatbot) */}
+            <button 
+              className={`sub-header-icon-btn ${refreshing ? 'spinning' : ''}`}
+              onClick={() => {
+                if (appMode === 'saathi') {
+                  handleReloadOrbit()
+                } else {
+                  handleReload()
+                }
+              }}
+              title={appMode === 'saathi' ? "Reload ORBIT AI" : "Reload Chatbot & Models"}
+              aria-label={appMode === 'saathi' ? "Reload ORBIT AI" : "Reload Chatbot & Models"}
+            >
+              <svg className={refreshing ? 'spin-icon' : ''} width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+            </button>
+
+            {/* New Session / New Chat */}
+            <button 
+              className="sub-header-icon-btn"
+              onClick={() => {
+                if (appMode === 'saathi') {
+                  handleNewOrbitChat()
+                } else {
+                  handleNewChat()
+                }
+              }}
+              title={appMode === 'saathi' ? "New ORBIT Session" : "New Chat"}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+
+            {/* Conversation History Drawer Toggle */}
+            <button 
+              className={`sub-header-icon-btn ${showHistoryDrawer ? 'active' : ''}`}
+              onClick={() => {
+                setShowHistoryDrawer(!showHistoryDrawer)
+                if (!showHistoryDrawer) {
+                  loadConversations()
+                }
+              }}
+              title="Conversation History"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5"/>
+                <path d="M12 7v5l4 2"/>
+              </svg>
+            </button>
+
+            {/* More Options Dropdown */}
+            <div className="chatbot-more-menu-wrapper" ref={chatOptionsRef}>
+              <button 
+                className={`sub-header-icon-btn ${showChatOptionsMenu ? 'active' : ''}`}
+                onClick={() => setShowChatOptionsMenu(!showChatOptionsMenu)}
+                title="More options"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="1.6"/>
+                  <circle cx="12" cy="12" r="1.6"/>
+                  <circle cx="19" cy="12" r="1.6"/>
+                </svg>
+              </button>
+
+              {showChatOptionsMenu && (
+                <div className="chatbot-options-dropdown">
+                  {appMode === 'saathi' ? (
+                    <>
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          handleReloadOrbit()
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                        </svg>
+                        <span>Reload ORBIT AI</span>
+                      </button>
+
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          handleReloadOrbit()
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="3 6 5 6 21 6"></polyline>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                        <span>Reset ORBIT Agent</span>
+                      </button>
+
+                      <div className="chatbot-dropdown-divider" />
+
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          setActiveTab('logs')
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="4 17 10 11 4 5" />
+                          <line x1="12" y1="19" x2="20" y2="19" />
+                        </svg>
+                        <span>View Execution Logs</span>
+                      </button>
+
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          setActiveTab('workspace')
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                        <span>Files & Memory Workspace</span>
+                      </button>
+
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          setActiveTab('skills')
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                        </svg>
+                        <span>Skills & AI Specialists</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          setActiveTab('workspace')
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                        <span>Files & Memory Workspace</span>
+                      </button>
+
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          setActiveTab('skills')
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                        </svg>
+                        <span>Skills & AI Specialists</span>
+                      </button>
+
+                      <div className="chatbot-dropdown-divider" />
+
+                      {activeSessionId && (
+                        <button 
+                          className="chatbot-dropdown-item"
+                          onClick={() => {
+                            const cur = conversations.find(c => c.id === activeSessionId)?.title || ''
+                            setChatRenameInput(cur)
+                            setIsRenamingChat(true)
+                            setShowChatOptionsMenu(false)
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 20h9"></path>
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                          </svg>
+                          <span>Rename Chat</span>
+                        </button>
+                      )}
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={handleCopyChatTranscript}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                        <span>Copy Transcript</span>
+                      </button>
+                      <button 
+                        className="chatbot-dropdown-item"
+                        onClick={() => {
+                          handleClearChat()
+                          setShowChatOptionsMenu(false)
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="3 6 5 6 21 6"></polyline>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                        <span>Clear Context</span>
+                      </button>
+                      {activeSessionId && (
+                        <button 
+                          className="chatbot-dropdown-item danger"
+                          onClick={(e) => {
+                            handleDeleteConversation(activeSessionId, e)
+                            setShowChatOptionsMenu(false)
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                          </svg>
+                          <span>Delete Conversation</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Reset / Clear Button */}
+            <button 
+              className="sub-header-icon-btn"
+              onClick={() => {
+                if (appMode === 'saathi') {
+                  handleReloadOrbit()
+                } else {
+                  handleClearChat()
+                }
+              }}
+              title={appMode === 'saathi' ? "Reset ORBIT AI Session" : "Close / Clear Chat"}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Main Content Scroll Panel */}
-      <main className="app-content">
+      <main className={`app-content ${(appMode === 'chat' || appMode === 'saathi') && activeTab === 'control' ? 'chat-mode' : 'panel-mode'}`}>
         {activeTab === 'control' ? (
           appMode === 'chat' ? (
             /* Chatbot Conversational Interface */
             <div className="chatbot-view-container">
-              <div className="chatbot-header-bar">
-                <div className="chatbot-header-title">
-                  <span style={{ fontWeight: 500 }}>Conversation with {selectedModel}</span>
+
+              {/* Conversation History Sliding Drawer */}
+              {showHistoryDrawer && (
+                <div className="chatbot-history-drawer-backdrop" onClick={() => setShowHistoryDrawer(false)}>
+                  <div className="chatbot-history-drawer" onClick={(e) => e.stopPropagation()}>
+                    <div className="chatbot-history-drawer-header">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '14px' }}>💬</span>
+                        <span style={{ fontWeight: 600, fontSize: '13px', color: '#f4f4f5' }}>Past Conversations</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <button 
+                          className="chatbot-drawer-new-btn"
+                          onClick={handleNewChat}
+                          title="Start a new chat"
+                        >
+                          + New
+                        </button>
+                        <button 
+                          className="chatbot-drawer-close-btn"
+                          onClick={() => setShowHistoryDrawer(false)}
+                          title="Close history"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="chatbot-history-search-bar">
+                      <input 
+                        type="text"
+                        placeholder="Search conversations..."
+                        value={historySearchQuery}
+                        onChange={(e) => setHistorySearchQuery(e.target.value)}
+                        className="chatbot-history-search-input"
+                      />
+                    </div>
+
+                    <div className="chatbot-history-list">
+                      {historyLoading ? (
+                        <div className="chatbot-history-empty">Loading conversations...</div>
+                      ) : filteredConversations.length === 0 ? (
+                        <div className="chatbot-history-empty">
+                          {historySearchQuery ? 'No matching conversations found.' : 'No saved conversations yet. Chat to build history!'}
+                        </div>
+                      ) : (
+                        filteredConversations.map(conv => {
+                          const isActive = activeSessionId === conv.id
+                          const formattedDate = conv.updated_at
+                            ? new Date(conv.updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + new Date(conv.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            : ''
+                          return (
+                            <div 
+                              key={conv.id}
+                              className={`chatbot-history-item ${isActive ? 'active' : ''}`}
+                              onClick={() => handleSelectConversation(conv.id)}
+                            >
+                              <div className="chatbot-history-item-top">
+                                <div className="chatbot-history-item-title" title={conv.title}>
+                                  <span className="chatbot-history-icon">💬</span>
+                                  <span>{conv.title || 'Untitled Conversation'}</span>
+                                </div>
+                                <button 
+                                  className="chatbot-history-delete-btn"
+                                  onClick={(e) => handleDeleteConversation(conv.id, e)}
+                                  title="Delete conversation"
+                                >
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="3 6 5 6 21 6"></polyline>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                  </svg>
+                                </button>
+                              </div>
+                              {conv.snippet && (
+                                <div className="chatbot-history-item-snippet">
+                                  {conv.snippet}
+                                </div>
+                              )}
+                              <div className="chatbot-history-item-meta">
+                                <span>{formattedDate}</span>
+                                <span className="chatbot-history-badge">{conv.message_count || 0} msgs</span>
+                              </div>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <button 
-                  className="chatbot-clear-btn"
-                  onClick={handleClearChat}
-                  title="Clear conversation history"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6"></polyline>
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                  </svg>
-                  <span>Clear Chat</span>
-                </button>
-              </div>
+              )}
 
               <div className="chat-messages-scroll">
                 {chatMessages.map(msg => (
                   <div key={msg.id} className={`chat-message-row ${msg.sender}`}>
-                    <div className="chat-avatar">
-                      {msg.sender === 'user' ? '👤' : '✨'}
+                    <div className={`chat-avatar ${msg.sender === 'assistant' ? 'orbit' : ''}`}>
+                      {msg.sender === 'user' ? '👤' : <img src={orbitLogo} alt="ORBIT" className="chat-orbit-avatar-img" />}
                     </div>
                     <div className="chat-bubble-content">
                       <div className="chat-bubble-header">
-                        <span className="chat-sender-name">{msg.sender === 'user' ? 'You' : 'SPR SAATHI'}</span>
+                        <span className="chat-sender-name">{msg.sender === 'user' ? 'You' : 'ORBIT'}</span>
                         <span className="chat-timestamp">{msg.timestamp}</span>
                       </div>
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="chat-msg-attachments">
+                          {msg.attachments.map(att => (
+                            <div key={att.id} className="chat-msg-att-badge">
+                              <span className="chat-msg-att-icon">
+                                {att.file_type === 'pdf' ? '📄' : att.file_type === 'docx' ? '📝' : att.is_image ? '🖼️' : att.file_type === 'folder' ? '📁' : '📎'}
+                              </span>
+                              <span className="chat-msg-att-name" title={att.filename}>{att.filename}</span>
+                              <span className="chat-msg-att-size">{att.size_str}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="chat-bubble-text">
                         {renderFormattedMarkdown(msg.text)}
                       </div>
@@ -1609,7 +2657,9 @@ function App(): React.JSX.Element {
                 ))}
                 {chatLoading && (
                   <div className="chat-message-row assistant">
-                    <div className="chat-avatar">✨</div>
+                    <div className="chat-avatar orbit">
+                      <img src={orbitLogo} alt="ORBIT" className="chat-orbit-avatar-img" />
+                    </div>
                     <div className="chat-bubble-content">
                       <div className="chat-typing-indicator">
                         <span></span>
@@ -1623,207 +2673,262 @@ function App(): React.JSX.Element {
               </div>
             </div>
           ) : (
-            /* SPR SAATHI Autonomous Agent Control Interface */
-            <>
-              {/* Dynamic Status Button at the top of Control Panel */}
-              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '12px' }}>
-                <div 
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '4px 10px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border-glass)',
-                    color: '#e4e4e7',
-                    fontSize: '11px',
-                    fontWeight: 500,
-                    cursor: 'pointer',
-                    transition: 'background 0.15s ease, border-color 0.15s ease'
-                  }}
-                  onClick={() => setShowLoopActivity(!showLoopActivity)}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)'
-                    e.currentTarget.style.background = '#1a1a20'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--border-glass)'
-                    e.currentTarget.style.background = 'var(--bg-card)'
-                  }}
-                >
-                  {status === 'observing' ? (
-                    <span>Observing</span>
-                  ) : status === 'planning' ? (
-                    <span>Planning</span>
-                  ) : status === 'checking_permission' ? (
-                    <span>Checking Permissions</span>
-                  ) : status === 'acting' ? (
-                    <span>Executing</span>
-                  ) : status === 'verifying' ? (
-                    <span>Verifying</span>
-                  ) : status === 'waiting_user' ? (
-                    <span>Waiting for User</span>
-                  ) : status === 'completed' ? (
-                    <span>Task Completed</span>
-                  ) : status === 'failed' || status === 'error' ? (
-                    <span>Task Failed</span>
-                  ) : status === 'stopped' ? (
-                    <span>Task Stopped</span>
-                  ) : (
-                    <span>Agent Idle</span>
-                  )}
-                  <span style={{ marginLeft: '4px', fontSize: '9px', color: 'var(--color-text-muted)' }}>
-                    {showLoopActivity ? '▲' : '▼'}
-                  </span>
-                </div>
+            /* ORBIT Conversational Agent Interface */
+            <div className="orbit-view-container">
+              <div className="orbit-messages-scroll">
+                {orbitMessages.map((msg) => {
+                  if (msg.sender === 'user') {
+                    return (
+                      <div key={msg.id} className="chat-message-row user">
+                        <div className="chat-bubble-content">
+                          <div className="chat-bubble-header">
+                            <span className="chat-sender-name">You</span>
+                            <span className="chat-timestamp">{msg.timestamp}</span>
+                          </div>
+                          {msg.attachments && msg.attachments.length > 0 && (
+                            <div className="chat-msg-attachments">
+                              {msg.attachments.map(att => (
+                                <div key={att.id} className="chat-msg-att-badge">
+                                  <span className="chat-msg-att-icon">
+                                    {att.file_type === 'pdf' ? '📄' : att.file_type === 'docx' ? '📝' : att.is_image ? '🖼️' : att.file_type === 'folder' ? '📁' : '📎'}
+                                  </span>
+                                  <span className="chat-msg-att-name" title={att.filename}>{att.filename}</span>
+                                  <span className="chat-msg-att-size">{att.size_str}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="chat-bubble-text">
+                            {msg.text}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  // Assistant / ORBIT message
+                  return (
+                    <div key={msg.id} className="chat-message-row assistant">
+                      <div className="chat-avatar orbit">
+                        <img src={orbitLogo} alt="ORBIT" className="chat-orbit-avatar-img" />
+                      </div>
+                      <div className="chat-bubble-content">
+                        <div className="chat-bubble-header">
+                          <span className="chat-sender-name">ORBIT</span>
+                          <span className="chat-timestamp">{msg.timestamp}</span>
+                        </div>
+
+                        {msg.type === 'info' && (
+                          <div className="chat-bubble-text">
+                            {renderFormattedMarkdown(msg.text || '')}
+                          </div>
+                        )}
+
+                        {msg.type === 'task_progress' && (
+                          <div className={`live-task-card ${msg.status === 'waiting_user' ? 'waiting' : msg.status === 'completed' ? 'completed' : msg.status === 'failed' ? 'failed' : 'active'}`}>
+                            {/* Card Header */}
+                            <div className="live-task-card-header">
+                              <div className="live-task-header-left">
+                                <div className={`live-pulse-beacon ${msg.status === 'waiting_user' ? 'waiting' : msg.status === 'completed' ? 'completed' : msg.status === 'failed' ? 'failed' : msg.status === 'planning' ? 'planning' : 'active'}`} />
+                                <span className="live-task-title">
+                                  {msg.status === 'completed' ? 'Task Completed' : msg.status === 'failed' ? 'Task Stopped' : msg.status === 'waiting_user' ? 'Clarification Required' : 'Executing Task'}
+                                </span>
+                                <span className={`live-task-status-tag ${msg.status === 'waiting_user' ? 'waiting' : msg.status === 'completed' ? 'completed' : msg.status === 'failed' ? 'failed' : msg.status === 'planning' ? 'planning' : 'active'}`}>
+                                  {msg.status === 'waiting_user' ? 'Needs input' : msg.status || 'active'}
+                                </span>
+                              </div>
+                              <div className="live-task-timer" title="Elapsed execution time">
+                                <span>⏱️</span>
+                                <span>{formatTimer(msg.elapsedSeconds || 0)}</span>
+                              </div>
+                            </div>
+
+                            {/* User Task Prompt Quote */}
+                            {msg.taskText && (
+                              <div style={{ fontSize: '11.5px', color: '#94a3b8', fontStyle: 'italic', borderLeft: '2px solid rgba(56, 189, 248, 0.35)', paddingLeft: '8px' }}>
+                                "{msg.taskText}"
+                              </div>
+                            )}
+
+                            {/* Prominent Layman Activity Banner */}
+                            <div className={`live-task-current-activity ${msg.status === 'waiting_user' ? 'waiting' : msg.status === 'completed' ? 'completed' : msg.status === 'failed' ? 'failed' : ''}`}>
+                              {msg.status !== 'completed' && msg.status !== 'failed' && <div className="live-task-activity-shimmer" />}
+                              <span className="live-task-activity-text">
+                                {msg.currentLaymanStatus || 'Orbit is actively working on your computer...'}
+                              </span>
+                            </div>
+
+                            {/* Progressive Layman Steps Timeline */}
+                            {msg.laymanSteps && msg.laymanSteps.length > 0 && (
+                              <div className="live-task-steps-trail">
+                                {msg.laymanSteps.map((step, sIdx) => (
+                                  <div key={step.id || sIdx} className={`live-task-step-item ${step.status}`}>
+                                    <span className={`live-step-badge ${step.status}`}>
+                                      {step.status === 'completed' ? '✓' : step.status === 'running' ? '⏳' : step.status === 'failed' ? '✗' : '•'}
+                                    </span>
+                                    <span>{step.text}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Interactive Clarification Question Box */}
+                            {msg.status === 'waiting_user' && (msg.question || userQuestion) && (
+                              <div className="live-task-question-card">
+                                <div className="live-task-question-header">
+                                  <span>❓</span>
+                                  <span>ORBIT needs clarification to proceed:</span>
+                                </div>
+                                <div className="live-task-question-text">
+                                  {msg.question || userQuestion}
+                                </div>
+                                {!msg.questionAnswer ? (
+                                  <div className="live-task-question-form">
+                                    <input
+                                      type="text"
+                                      className="live-task-question-input"
+                                      placeholder="Type your answer here..."
+                                      value={inlineClarificationAnswer}
+                                      onChange={(e) => setInlineClarificationAnswer(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && inlineClarificationAnswer.trim()) {
+                                          respondUserQuestion(inlineClarificationAnswer)
+                                        }
+                                      }}
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      className="live-task-question-submit-btn"
+                                      onClick={() => {
+                                        if (inlineClarificationAnswer.trim()) {
+                                          respondUserQuestion(inlineClarificationAnswer)
+                                        }
+                                      }}
+                                    >
+                                      Send Reply ➔
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: '11.5px', color: '#4ade80' }}>
+                                    ✓ Answered: "{msg.questionAnswer}"
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Quick Controls Toolbar */}
+                            <div className="live-task-controls-bar">
+                              {msg.status === 'failed' && (
+                                <button
+                                  type="button"
+                                  className="live-btn-control retry"
+                                  onClick={() => triggerStartTask(msg.taskText)}
+                                >
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                                  Try Again
+                                </button>
+                              )}
+                              {msg.status !== 'completed' && msg.status !== 'failed' && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className={`live-btn-control ${agentState.takeover_active ? 'takeover-active' : ''}`}
+                                    onClick={toggleTakeover}
+                                    title={agentState.takeover_active ? "Release control back to Orbit" : "Take manual mouse & keyboard control"}
+                                  >
+                                    {agentState.takeover_active ? '▶ Resume Orbit' : '✋ Take Control'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="live-btn-control stop"
+                                    onClick={triggerStopTask}
+                                    title="Stop agent execution"
+                                  >
+                                    ■ Stop
+                                  </button>
+                                </>
+                              )}
+                              {msg.status === 'completed' && (
+                                <button
+                                  type="button"
+                                  className="live-btn-control"
+                                  onClick={handleNewOrbitChat}
+                                >
+                                  + New Task
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {/* Standby Hero when only welcome message exists and status is idle */}
+                {orbitMessages.length === 1 && status === 'idle' && (
+                  <div className="orbit-hero-container">
+                    <div className="orbit-standby-logo-wrapper">
+                      <div className="orbit-standby-logo-glow" />
+                      <img src={orbitLogo} alt="ORBIT" className="orbit-standby-logo-img" />
+                    </div>
+                    <div className="orbit-hero-title">
+                      ORBIT Autonomous Assistant
+                    </div>
+                    <div className="orbit-hero-subtitle">
+                      Enter any instruction below. ORBIT will automate desktop tasks, open apps like Paint, create drawings, manage files, and ask clarifying questions if anything is unclear.
+                    </div>
+                    <div className="orbit-hero-suggestions">
+                      <button 
+                        type="button" 
+                        className="orbit-suggestion-chip"
+                        onClick={() => triggerStartTask("Open Paint and draw a portrait of Mahatma Gandhi.")}
+                      >
+                        🎨 Open Paint & draw portrait of Mahatma Gandhi
+                      </button>
+                      <button 
+                        type="button" 
+                        className="orbit-suggestion-chip"
+                        onClick={() => triggerStartTask("Open Notepad and draft meeting notes template.")}
+                      >
+                        📝 Open Notepad & draft meeting notes
+                      </button>
+                      <button 
+                        type="button" 
+                        className="orbit-suggestion-chip"
+                        onClick={() => triggerStartTask("Open File Explorer and show Downloads.")}
+                      >
+                        📁 Show Downloads in File Explorer
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Security Authorization Prompt Overlay */}
+                {activePrompt && (
+                  <section className="permission-overlay" style={{ marginTop: '12px' }}>
+                    <div className="section-title" style={{ color: 'var(--color-takeover)' }}>Security Check Required</div>
+                    <div className="prompt-text">
+                      Agent is requesting to use <strong>{activePrompt.tool_name}</strong>:
+                    </div>
+                    <div className="prompt-args">
+                      {JSON.stringify(activePrompt.arguments, null, 2)}
+                    </div>
+                    <div className="prompt-actions">
+                      <button className="btn btn-primary" onClick={() => respondPermission('allow')}>
+                        Allow Action
+                      </button>
+                      <button className="btn btn-danger" onClick={() => respondPermission('deny')}>
+                        Block Action
+                      </button>
+                    </div>
+                  </section>
+                )}
+
+                <div ref={orbitChatEndRef} />
               </div>
-
-              {/* Collapsible Loop Activity visualizer */}
-              {showLoopActivity && (
-                <section className="loop-visualizer" style={{ marginBottom: '16px', animation: 'slide-in 0.2s ease-out' }}>
-                  <div className="section-title">Loop Activity</div>
-                  <div className="loop-steps-grid">
-                    <div className={`loop-step-node ${status === 'observing' ? 'active' : ''}`}>
-                      <div className="node-icon observe">🔍</div>
-                      <span>OBSERVE</span>
-                    </div>
-                    <div className={`loop-step-node ${status === 'planning' ? 'active' : ''}`}>
-                      <div className="node-icon plan">📋</div>
-                      <span>PLAN</span>
-                    </div>
-                    <div className={`loop-step-node ${status === 'checking_permission' ? 'active' : ''}`}>
-                      <div className="node-icon check">🛡️</div>
-                      <span>CHECK</span>
-                    </div>
-                    <div className={`loop-step-node ${status === 'acting' ? 'active' : ''}`}>
-                      <div className="node-icon act">⚡</div>
-                      <span>ACT</span>
-                    </div>
-                    <div className={`loop-step-node ${status === 'verifying' ? 'active' : ''}`}>
-                      <div className="node-icon verify">✔</div>
-                      <span>VERIFY</span>
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              {/* Computer State Card */}
-              {agentState.computer_state && (
-                <div 
-                  style={{ 
-                    background: 'var(--bg-card)', 
-                    border: '1px solid var(--border-glass)', 
-                    borderRadius: '12px', 
-                    padding: '12px', 
-                    fontSize: '12px', 
-                    display: 'flex', 
-                    flexDirection: 'column', 
-                    gap: '6px',
-                    animation: 'slide-in 0.2s ease-out'
-                  }}
-                >
-                  <div className="section-title">Computer State</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--color-text-secondary)' }}>Screen:</span>
-                    <span style={{ fontWeight: 600 }}>{agentState.computer_state.screen_width} × {agentState.computer_state.screen_height}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--color-text-secondary)' }}>Cursor:</span>
-                    <span style={{ fontWeight: 600, color: 'var(--color-act)' }}>{agentState.computer_state.cursor_x}, {agentState.computer_state.cursor_y}</span>
-                  </div>
-                  {agentState.computer_state.active_window && (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>Active Window:</span>
-                        <span style={{ fontWeight: 600, maxWidth: '180px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={agentState.computer_state.active_window.title}>
-                          {agentState.computer_state.active_window.title}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>Process:</span>
-                        <span style={{ fontFamily: 'monospace' }}>{agentState.computer_state.active_window.process}</span>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* Dynamic Action Steps Checklist */}
-              {agentState.steps.length > 0 && (
-                <section className="steps-checklist">
-                  <div className="section-title">Execution Steps</div>
-                  {agentState.steps.map((step) => (
-                    <div 
-                      key={step.step_id} 
-                      className={`step-item ${step.status} ${agentState.active_step_id === step.step_id ? 'running' : ''}`}
-                    >
-                      <div className="step-indicator"></div>
-                      <div className="step-desc" title={step.description}>{step.description}</div>
-                    </div>
-                  ))}
-                </section>
-              )}
-
-              {/* Permission Authorization Card */}
-              {activePrompt && (
-                <section className="permission-overlay">
-                  <div className="section-title" style={{ color: 'var(--color-takeover)' }}>Security Check Required</div>
-                  <div className="prompt-text">
-                    Agent is requesting to use <strong>{activePrompt.tool_name}</strong>:
-                  </div>
-                  <div className="prompt-args">
-                    {JSON.stringify(activePrompt.arguments, null, 2)}
-                  </div>
-                  <div className="prompt-actions">
-                    <button className="btn btn-primary" onClick={() => respondPermission('allow')}>
-                      Allow Action
-                    </button>
-                    <button className="btn btn-danger" onClick={() => respondPermission('deny')}>
-                      Block Action
-                    </button>
-                  </div>
-                </section>
-              )}
-
-              {/* Clarification Prompt Overlay */}
-              {status === 'waiting_user' && (
-                <section className="permission-overlay" style={{ borderColor: 'var(--color-act)' }}>
-                  <div className="section-title" style={{ color: 'var(--color-act)' }}>Clarification Required</div>
-                  <div className="prompt-text" style={{ marginBottom: '10px' }}>
-                    <strong>The Agent asks:</strong>
-                    <div style={{ marginTop: '6px', padding: '10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
-                      {userQuestion || "I need clarification to proceed. Please respond below."}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                    <input 
-                      id="userClarificationResponse"
-                      placeholder="Type your response here..."
-                      style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)', background: 'var(--bg-card)', color: 'var(--color-text)', outline: 'none' }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          respondUserQuestion(e.currentTarget.value)
-                          e.currentTarget.value = ''
-                        }
-                      }}
-                    />
-                    <button 
-                      className="btn btn-primary"
-                      onClick={() => {
-                        const input = document.getElementById('userClarificationResponse') as HTMLInputElement
-                        if (input) {
-                          respondUserQuestion(input.value)
-                          input.value = ''
-                        }
-                      }}
-                    >
-                      Send
-                    </button>
-                  </div>
-                </section>
-              )}
-            </>
+            </div>
           )
         ) : activeTab === 'security' ? (
           <>
@@ -2084,9 +3189,31 @@ function App(): React.JSX.Element {
           </>
         ) : activeTab === 'workspace' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
-            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
-              <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Workspace & Persistent Memory</div>
-              <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Manage agent knowledge, learned user preferences, and sandboxed workspace files</div>
+            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Workspace & Persistent Memory</div>
+                <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Manage agent knowledge, learned user preferences, and sandboxed workspace files</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('control')}
+                title="Back to Dashboard & Chat"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.06)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  padding: '5px 12px',
+                  borderRadius: '6px',
+                  fontSize: '11.5px',
+                  fontWeight: 500,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>✕</span> Back to Chat
+              </button>
             </div>
 
             <div className="subnav-pills">
@@ -2254,9 +3381,31 @@ function App(): React.JSX.Element {
           </div>
         ) : activeTab === 'skills' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', overflow: 'hidden' }}>
-            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
-              <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Skills & AI Specialists (KAIRO)</div>
-              <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Discover registered system skills and delegate multi-step autonomous tasks to specialists</div>
+            <div style={{ padding: '4px 4px 10px 4px', borderBottom: '1px solid rgba(255, 255, 255, 0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', marginBottom: '4px' }}>Skills & AI Specialists (KAIRO)</div>
+                <div style={{ fontSize: '10.5px', color: '#64748b', lineHeight: '14px' }}>Discover registered system skills and delegate multi-step autonomous tasks to specialists</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('control')}
+                title="Back to Dashboard & Chat"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.06)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  padding: '5px 12px',
+                  borderRadius: '6px',
+                  fontSize: '11.5px',
+                  fontWeight: 500,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>✕</span> Back to Chat
+              </button>
             </div>
 
             <div className="subnav-pills">
@@ -2597,19 +3746,106 @@ function App(): React.JSX.Element {
 
           </div>
         ) : (
-          /* Console Event Logs */
-          <section className="event-feed">
-            <div className="section-title">Execution Log</div>
-            <div className="feed-items">
-              {feed.map((item) => (
-                <div key={item.id} className={`feed-item ${item.type}`}>
-                  <div className="feed-time">{item.timestamp}</div>
-                  <div>{item.message}</div>
+          /* Console Event Logs & System Diagnostics */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', minHeight: 0 }}>
+            {/* Live Computer State Card (Shifted from Orbit) */}
+            <div 
+              style={{ 
+                background: 'var(--bg-card)', 
+                border: '1px solid var(--border-glass)', 
+                borderRadius: '12px', 
+                padding: '12px 14px', 
+                fontSize: '12px', 
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '8px',
+                flexShrink: 0
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="section-title" style={{ margin: 0, fontSize: '11px' }}>🖥️ Computer State</div>
+                {agentState.computer_state ? (
+                  <span style={{ fontSize: '9.5px', color: '#34d399', background: 'rgba(52, 211, 153, 0.12)', padding: '2px 8px', borderRadius: '10px', fontWeight: 600 }}>Active Stream</span>
+                ) : (
+                  <span style={{ fontSize: '9.5px', color: 'var(--color-text-muted)', background: 'rgba(255, 255, 255, 0.04)', padding: '2px 8px', borderRadius: '10px' }}>Standby</span>
+                )}
+              </div>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '6px 10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                  <div style={{ color: 'var(--color-text-muted)', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Screen Resolution</div>
+                  <div style={{ fontWeight: 600, fontSize: '11.5px', color: '#f4f4f5', marginTop: '2px' }}>
+                    {agentState.computer_state ? `${agentState.computer_state.screen_width} × ${agentState.computer_state.screen_height}` : '1920 × 1080'}
+                  </div>
                 </div>
-              ))}
-              <div ref={feedEndRef} />
+                
+                <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '6px 10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                  <div style={{ color: 'var(--color-text-muted)', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Cursor Coordinates</div>
+                  <div style={{ fontWeight: 600, fontSize: '11.5px', color: 'var(--color-act)', marginTop: '2px' }}>
+                    {agentState.computer_state ? `${agentState.computer_state.cursor_x}, ${agentState.computer_state.cursor_y}` : 'Default / Centered'}
+                  </div>
+                </div>
+              </div>
+
+              {agentState.computer_state?.active_window && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', background: 'rgba(255, 255, 255, 0.02)', padding: '6px 10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--color-text-muted)', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Foreground Window</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: '10px', color: '#94a3b8' }}>{agentState.computer_state.active_window.process}</span>
+                  </div>
+                  <div style={{ fontWeight: 600, color: '#ffffff', fontSize: '11.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={agentState.computer_state.active_window.title}>
+                    {agentState.computer_state.active_window.title}
+                  </div>
+                </div>
+              )}
             </div>
-          </section>
+
+            {/* Loop Activity visualizer in Execution Log Panel */}
+            <section className="loop-visualizer" style={{ flexShrink: 0, padding: '10px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <div className="section-title" style={{ margin: 0, fontSize: '11px' }}>Agent Autonomous Loop</div>
+                <div style={{ fontSize: '10px', fontWeight: 600, color: status === 'idle' ? 'var(--color-text-muted)' : 'var(--color-act)', textTransform: 'capitalize' }}>
+                  {status ? status.replace('_', ' ') : 'Idle'}
+                </div>
+              </div>
+              <div className="loop-steps-grid">
+                <div className={`loop-step-node ${status === 'observing' ? 'active' : ''}`}>
+                  <div className="node-icon observe">🔍</div>
+                  <span>OBSERVE</span>
+                </div>
+                <div className={`loop-step-node ${status === 'planning' ? 'active' : ''}`}>
+                  <div className="node-icon plan">📋</div>
+                  <span>PLAN</span>
+                </div>
+                <div className={`loop-step-node ${status === 'checking_permission' ? 'active' : ''}`}>
+                  <div className="node-icon check">🛡️</div>
+                  <span>CHECK</span>
+                </div>
+                <div className={`loop-step-node ${status === 'acting' ? 'active' : ''}`}>
+                  <div className="node-icon act">⚡</div>
+                  <span>ACT</span>
+                </div>
+                <div className={`loop-step-node ${status === 'verifying' ? 'active' : ''}`}>
+                  <div className="node-icon verify">✔</div>
+                  <span>VERIFY</span>
+                </div>
+              </div>
+            </section>
+
+            {/* Console Event Logs */}
+            <section className="event-feed" style={{ flex: 1, minHeight: 0 }}>
+              <div className="section-title">Execution Log</div>
+              <div className="feed-items">
+                {feed.map((item) => (
+                  <div key={item.id} className={`feed-item ${item.type}`}>
+                    <div className="feed-time">{item.timestamp}</div>
+                    <div>{item.message}</div>
+                  </div>
+                ))}
+                <div ref={feedEndRef} />
+              </div>
+            </section>
+          </div>
         )}
       </main>
 
@@ -2626,7 +3862,7 @@ function App(): React.JSX.Element {
                     <span style={{ fontSize: '12px' }}>🟡</span> HUMAN CONTROL
                   </div>
                   <div style={{ fontSize: '10.5px', color: 'var(--color-text-secondary)', marginBottom: '8px' }}>
-                    SPR SAATHI is paused. You control the computer.
+                    ORBIT is paused. You control the computer.
                   </div>
                   <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
                     <button 
@@ -2711,14 +3947,82 @@ function App(): React.JSX.Element {
           </div>
         )}
 
+        {/* Hidden inputs for uploading media/files and folders */}
+        <input 
+          type="file" 
+          ref={mediaFileInputRef} 
+          style={{ display: 'none' }} 
+          multiple 
+          accept=".pdf,.doc,.docx,.txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.py,.ts,.js,.html,.css,*/*" 
+          onChange={(e) => {
+            if (e.target.files && e.target.files.length > 0) {
+              handleFilesUpload(e.target.files)
+            }
+          }} 
+        />
+        <input 
+          type="file" 
+          ref={folderInputRef} 
+          // @ts-ignore
+          webkitdirectory="true" 
+          directory="" 
+          multiple 
+          style={{ display: 'none' }} 
+          onChange={(e) => {
+            if (e.target.files && e.target.files.length > 0) {
+              handleFilesUpload(e.target.files)
+            }
+          }} 
+        />
+
         {/* Natural Language Prompt Input */}
-        <div className="input-container-premium">
+        <div 
+          className={`input-container-premium ${isDraggingOver ? 'drag-over' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {/* Attachment Chips Tray */}
+          {(attachments.length > 0 || isUploadingContext) && (
+            <div className="attachment-chips-tray">
+              {attachments.map(att => (
+                <div key={att.id} className={`attachment-chip ${att.file_type}`}>
+                  {att.is_image && att.preview_url ? (
+                    <img src={att.preview_url} alt="" className="attachment-chip-thumb" />
+                  ) : (
+                    <span className={`attachment-chip-badge ${att.file_type}`}>
+                      {att.file_type === 'pdf' ? 'PDF' : att.file_type === 'docx' ? 'DOC' : att.file_type === 'folder' ? 'DIR' : att.file_type === 'image' ? 'IMG' : 'FILE'}
+                    </span>
+                  )}
+                  <span className="attachment-chip-name" title={att.filename}>{att.filename}</span>
+                  <span className="attachment-chip-size">{att.size_str}</span>
+                  <button 
+                    type="button" 
+                    className="attachment-chip-remove"
+                    onClick={() => setAttachments(prev => prev.filter(a => a.id !== att.id))}
+                    title="Remove attachment"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {isUploadingContext && (
+                <div className="attachment-chip uploading">
+                  <span className="attachment-upload-spinner" />
+                  <span>Processing...</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <textarea
             className="chat-textarea"
             placeholder={
               appMode === 'chat'
-                ? "Ask anything, discuss ideas, or request code..."
-                : "Describe a task to perform on your computer..."
+                ? "Ask anything, @ to mention, / for actions"
+                : status === 'waiting_user'
+                ? "Type your answer to Orbit's question..."
+                : "Tell ORBIT what to do on your computer (e.g. Open Paint and draw Gandhi)..."
             }
             value={taskInput}
             onChange={(e) => setTaskInput(e.target.value)}
@@ -2728,7 +4032,12 @@ function App(): React.JSX.Element {
                 if (appMode === 'chat') {
                   handleSendChatMessage()
                 } else {
-                  triggerStartTask()
+                  if (status === 'waiting_user' && taskInput.trim()) {
+                    respondUserQuestion(taskInput)
+                    setTaskInput('')
+                  } else {
+                    triggerStartTask()
+                  }
                 }
               }
             }}
@@ -2737,16 +4046,143 @@ function App(): React.JSX.Element {
           
           <div className="input-actions-row">
             <div className="input-actions-left">
-              <div className="model-dropdown-container">
+              {/* + Button & Add Context Popup Menu */}
+              <div className="add-context-container" ref={addContextMenuRef}>
+                <button
+                  type="button"
+                  className={`btn-add-context ${showAddContextMenu ? 'active' : ''}`}
+                  onClick={() => setShowAddContextMenu(prev => !prev)}
+                  title="Add Context (Media, Folder, Mentions, Actions)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                </button>
+
+                {showAddContextMenu && (
+                  <div className="add-context-menu">
+                    <div className="add-context-header">Actions & Context</div>
+                    
+                    {/* New Chat */}
+                    <button
+                      type="button"
+                      className="add-context-item"
+                      onClick={() => {
+                        setShowAddContextMenu(false)
+                        if (appMode === 'saathi') {
+                          handleNewOrbitChat()
+                        } else {
+                          handleNewChat()
+                        }
+                      }}
+                    >
+                      <span className="add-context-icon">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19"></line>
+                          <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                      </span>
+                      <span className="add-context-label">New Chat</span>
+                    </button>
+
+                    {/* Media */}
+                    <button
+                      type="button"
+                      className="add-context-item"
+                      onClick={() => {
+                        setShowAddContextMenu(false)
+                        mediaFileInputRef.current?.click()
+                      }}
+                    >
+                      <span className="add-context-icon">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                          <circle cx="8.5" cy="8.5" r="1.5"/>
+                          <polyline points="21 15 16 10 5 21"/>
+                        </svg>
+                      </span>
+                      <span className="add-context-label">Media</span>
+                    </button>
+
+                    {/* Mentions */}
+                    <button
+                      type="button"
+                      className="add-context-item"
+                      onClick={() => {
+                        setShowAddContextMenu(false)
+                        setTaskInput(prev => (prev ? `${prev} @` : '@'))
+                      }}
+                    >
+                      <span className="add-context-icon">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="4"/>
+                          <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/>
+                        </svg>
+                      </span>
+                      <span className="add-context-label">Mentions</span>
+                    </button>
+
+                    {/* Actions */}
+                    <button
+                      type="button"
+                      className="add-context-item"
+                      onClick={() => {
+                        setShowAddContextMenu(false)
+                        setTaskInput(prev => (prev ? `${prev} /` : '/'))
+                      }}
+                    >
+                      <span className="add-context-icon">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="9 11 12 14 22 4"/>
+                          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                        </svg>
+                      </span>
+                      <span className="add-context-label">Actions</span>
+                    </button>
+
+                    {/* Folder */}
+                    <button
+                      type="button"
+                      className="add-context-item"
+                      onClick={() => {
+                        setShowAddContextMenu(false)
+                        folderInputRef.current?.click()
+                      }}
+                    >
+                      <span className="add-context-icon">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                        </svg>
+                      </span>
+                      <span className="add-context-label">Folder</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Model Dropdown Container */}
+              <div className="model-dropdown-container" title="Select AI Model">
+                <span className="model-select-label">
+                  {selectedModel}{selectedProvider === 'local' && !installedList.some(m => m.name.toLowerCase() === selectedModel.toLowerCase()) ? ' (Active)' : ''}
+                </span>
+                <span className="dropdown-chevron">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="18 15 12 9 6 15"></polyline>
+                  </svg>
+                </span>
                 <select
-                  className="model-select-premium"
+                  className="model-select-overlay"
                   value={`${selectedProvider}:${selectedModel}`}
                   onChange={(e) => {
                     const [provider, modelName] = e.target.value.split(':')
                     handleModelChange(provider as 'api' | 'local', modelName)
                   }}
                 >
-                  {/* Cloud/API Models (only if key configured or active) */}
+                  {/* Cloud/API Models */}
+                  {(configuredKeys.gemini || selectedModel === 'Gemini 3.7 Flash High' || selectedModel === 'Gemini 3.5 Flash') && (
+                    <option value="api:Gemini 3.7 Flash High">Gemini 3.7 Flash High</option>
+                  )}
                   {(configuredKeys.gemini || selectedModel === 'Gemini 3.5 Flash') && (
                     <option value="api:Gemini 3.5 Flash">Gemini 3.5 Flash</option>
                   )}
@@ -2769,7 +4205,7 @@ function App(): React.JSX.Element {
                     <option value="api:Claude 3.5 Haiku">Claude 3.5 Haiku</option>
                   )}
                   
-                  {/* Local/Offline Models (ALL installed models detected on system) */}
+                  {/* Local/Offline Models */}
                   {installedList.map(model => (
                     <option key={model.name} value={`local:${model.name}`}>
                       {model.name} {model.isVision ? '👁️ (Vision)' : '(Local)'}
@@ -2782,11 +4218,6 @@ function App(): React.JSX.Element {
                     </option>
                   )}
                 </select>
-                <span className="dropdown-chevron">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                  </svg>
-                </span>
               </div>
             </div>
             
@@ -2814,18 +4245,26 @@ function App(): React.JSX.Element {
               
               <button 
                 className="btn-send-premium"
-                title={appMode === 'chat' ? "Send message" : "Send command"}
+                title={appMode === 'chat' ? "Send message" : status === 'waiting_user' ? "Send clarification answer" : "Send command"}
                 onClick={() => {
                   if (appMode === 'chat') {
                     handleSendChatMessage()
                   } else {
-                    triggerStartTask()
+                    if (status === 'waiting_user' && taskInput.trim()) {
+                      respondUserQuestion(taskInput)
+                      setTaskInput('')
+                    } else {
+                      triggerStartTask()
+                    }
                   }
                 }}
                 disabled={
                   appMode === 'chat'
-                    ? (chatLoading || !taskInput.trim())
-                    : ((status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped') || !taskInput.trim())
+                    ? (chatLoading || (!taskInput.trim() && attachments.length === 0))
+                    : (status === 'waiting_user'
+                        ? !taskInput.trim()
+                        : ((status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'stopped' && status !== 'cancelled' && status !== 'failed') || (!taskInput.trim() && attachments.length === 0))
+                      )
                 }
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -2873,7 +4312,7 @@ function App(): React.JSX.Element {
               🎤 Microphone Access Required
             </div>
             <div style={{ fontSize: '13px', color: 'var(--color-text-secondary)', lineHeight: '18px' }}>
-              SPR SAATHI requests access to your microphone to transcribe voice commands.
+              ORBIT requests access to your microphone to transcribe voice commands.
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button 

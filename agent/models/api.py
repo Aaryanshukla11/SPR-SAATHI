@@ -2,7 +2,13 @@ import json
 import httpx
 import re
 from typing import List, Dict, Any, Optional
-from .base import BaseModelProvider, ModelResponse
+from .base import (
+    BaseModelProvider, ModelResponse,
+    safe_parse_api_json, clean_and_normalize_decision,
+    ModelPipelineError, ModelNetworkError, ModelHttpError,
+    ModelEmptyResponseError, ModelApiJsonError, ModelInvalidContentError,
+    ModelDecisionParseError
+)
 
 class ApiModelProvider(BaseModelProvider):
     def _get_api_key(self, provider: str) -> Optional[str]:
@@ -30,6 +36,8 @@ class ApiModelProvider(BaseModelProvider):
             model = "gemini-1.5-flash"
             if "pro" in name:
                 model = "gemini-1.5-pro"
+            elif "3.7" in name or "2.0" in name:
+                model = "gemini-2.0-flash"
             return "gemini", model
         elif "claude" in name or "anthropic" in name or "sonnet" in name or "haiku" in name:
             model = "claude-3-5-sonnet-20241022"
@@ -83,8 +91,11 @@ class ApiModelProvider(BaseModelProvider):
                 res = await client.post(url, json=payload, headers=headers)
                 if res.status_code != 200:
                     raise RuntimeError(f"OpenAI API call failed with status {res.status_code}: {res.text}")
-                res_data = res.json()
-                return res_data["choices"][0]["message"]["content"]
+                res_data = safe_parse_api_json(res.text, endpoint=url, status_code=res.status_code)
+                choices = res_data.get("choices", [])
+                if not choices:
+                    raise ModelInvalidContentError(f"OpenAI response missing 'choices': {res.text[:100]}")
+                return choices[0].get("message", {}).get("content", "") or ""
                 
             elif provider == "gemini":
                 # Maps gemini models to beta API endpoints
@@ -116,8 +127,15 @@ class ApiModelProvider(BaseModelProvider):
                 res = await client.post(url, json=payload, headers=headers)
                 if res.status_code != 200:
                     raise RuntimeError(f"Gemini API call failed with status {res.status_code}: {res.text}")
-                res_data = res.json()
-                return res_data["candidates"][0]["content"]["parts"][0]["text"]
+                res_data = safe_parse_api_json(res.text, endpoint=url, status_code=res.status_code)
+                candidates = res_data.get("candidates", [])
+                if not candidates:
+                    feedback = res_data.get("promptFeedback", {})
+                    raise ModelInvalidContentError(f"Gemini response has no candidates (feedback: {feedback}): {res.text[:100]}")
+                c_parts = candidates[0].get("content", {}).get("parts", [])
+                if not c_parts:
+                    raise ModelInvalidContentError(f"Gemini candidate content has no parts: {res.text[:100]}")
+                return c_parts[0].get("text", "") or ""
                 
             elif provider == "anthropic":
                 url = "https://api.anthropic.com/v1/messages"
@@ -154,16 +172,19 @@ class ApiModelProvider(BaseModelProvider):
                 res = await client.post(url, json=payload, headers=headers)
                 if res.status_code != 200:
                     raise RuntimeError(f"Anthropic API call failed with status {res.status_code}: {res.text}")
-                res_data = res.json()
-                return res_data["content"][0]["text"]
+                res_data = safe_parse_api_json(res.text, endpoint=url, status_code=res.status_code)
+                c_list = res_data.get("content", [])
+                if not c_list:
+                    raise ModelInvalidContentError(f"Anthropic response has no content blocks: {res.text[:100]}")
+                return c_list[0].get("text", "") or ""
                 
             else:
                 raise ValueError(f"Unknown API provider: {provider}")
 
-    async def generate(self, prompt: str, system_instruction: Optional[str] = None) -> ModelResponse:
+    async def generate(self, prompt: str, system_instruction: Optional[str] = None, image_base64: Optional[str] = None) -> ModelResponse:
         system = system_instruction or "You are a helpful assistant."
         try:
-            content = await self._make_api_call(system, prompt, require_json=False)
+            content = await self._make_api_call(system, prompt, image_base64=image_base64, require_json=False)
             return ModelResponse(text=content, raw_response={"provider_model": self.model_name})
         except Exception as e:
             err_str = str(e)
@@ -208,16 +229,22 @@ class ApiModelProvider(BaseModelProvider):
 
         img_b64 = image_base64 if image_base64 is not None else observation.get("image_base64")
 
+        # Layer 1: Call API with structured output enforcement
         try:
-            content = await self._make_api_call(system_instruction, user_content, image_base64=img_b64)
-            from .base import clean_and_normalize_decision
-            decision = clean_and_normalize_decision(content)
-            return decision
+            content = await self._make_api_call(system_instruction, user_content, image_base64=img_b64, require_json=True)
         except Exception as e:
             err_str = str(e)
             if "API_CREDENTIALS_MISSING" in err_str:
                 raise RuntimeError("API_CREDENTIALS_MISSING")
             raise RuntimeError(f"API local service call failed. Error: {err_str}")
+
+        # Layer 2: Model Decision Parsing & Normalization
+        try:
+            from .base import clean_and_normalize_decision
+            decision = clean_and_normalize_decision(content)
+            return decision
+        except Exception as e:
+            raise RuntimeError(f"Model decision parsing failed: {str(e)}")
 
     async def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
         provider, model = self._resolve_provider_and_model()

@@ -6,6 +6,8 @@ declare global {
     api: {
       getBackendPort: () => Promise<number>
       setAlwaysOnTop: (alwaysOnTop: boolean) => void
+      restartBackend?: () => Promise<boolean>
+      onBackendPortUpdated?: (callback: (port: number) => void) => () => void
     }
   }
 }

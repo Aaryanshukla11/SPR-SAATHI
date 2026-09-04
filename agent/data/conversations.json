@@ -1,0 +1,480 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-09-04T09:36:50.935527+00:00",
+  "conversations": {
+    "test_custom_session_123": {
+      "id": "test_custom_session_123",
+      "title": "UseEffect in React",
+      "created_at": "2026-09-04T06:04:08.869745+00:00",
+      "updated_at": "2026-09-04T06:04:32.841149+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788501848869_9039",
+          "role": "user",
+          "content": "Explain useEffect in React",
+          "timestamp": "2026-09-04T06:04:08.869745+00:00"
+        },
+        {
+          "id": "msg_1788501848890_d8fa",
+          "role": "assistant",
+          "content": "Here is your answer about React hooks.",
+          "timestamp": "2026-09-04T06:04:08.890362+00:00"
+        },
+        {
+          "id": "msg_1788501872817_ce8e",
+          "role": "user",
+          "content": "Explain useEffect in React",
+          "timestamp": "2026-09-04T06:04:32.817681+00:00"
+        },
+        {
+          "id": "msg_1788501872841_0696",
+          "role": "assistant",
+          "content": "Here is your answer about React hooks.",
+          "timestamp": "2026-09-04T06:04:32.841149+00:00"
+        }
+      ]
+    },
+    "conv_1788501914_6ddc4a": {
+      "id": "conv_1788501914_6ddc4a",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T06:05:14.551040+00:00",
+      "updated_at": "2026-09-04T06:05:14.579028+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788501914551_fba8",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T06:05:14.551040+00:00"
+        },
+        {
+          "id": "msg_1788501914579_6f6c",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T06:05:14.579028+00:00"
+        }
+      ]
+    },
+    "conv_1788501914_4ef0e1": {
+      "id": "conv_1788501914_4ef0e1",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T06:05:14.608725+00:00",
+      "updated_at": "2026-09-04T06:05:14.628544+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788501914608_2dda",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T06:05:14.608725+00:00"
+        },
+        {
+          "id": "msg_1788501914628_ce3e",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T06:05:14.628544+00:00"
+        }
+      ]
+    },
+    "conv_1788501914_637cd1": {
+      "id": "conv_1788501914_637cd1",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T06:05:14.657705+00:00",
+      "updated_at": "2026-09-04T06:05:14.676706+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788501914657_945e",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T06:05:14.657705+00:00"
+        },
+        {
+          "id": "msg_1788501914676_2c13",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T06:05:14.676706+00:00"
+        }
+      ]
+    },
+    "conv_1788502082_131458": {
+      "id": "conv_1788502082_131458",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T06:08:02.144464+00:00",
+      "updated_at": "2026-09-04T06:08:02.154163+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788502082144_b2b7",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T06:08:02.144464+00:00"
+        },
+        {
+          "id": "msg_1788502082154_31c4",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T06:08:02.154163+00:00"
+        }
+      ]
+    },
+    "conv_1788502082_f24f08": {
+      "id": "conv_1788502082_f24f08",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T06:08:02.168957+00:00",
+      "updated_at": "2026-09-04T06:08:02.177450+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788502082168_06ef",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T06:08:02.168957+00:00"
+        },
+        {
+          "id": "msg_1788502082177_47ae",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T06:08:02.177450+00:00"
+        }
+      ]
+    },
+    "conv_1788502082_0adfa7": {
+      "id": "conv_1788502082_0adfa7",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T06:08:02.190103+00:00",
+      "updated_at": "2026-09-04T06:08:02.196598+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788502082190_7251",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T06:08:02.190103+00:00"
+        },
+        {
+          "id": "msg_1788502082196_d60b",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T06:08:02.196598+00:00"
+        }
+      ]
+    },
+    "conv_1788502110_51d286": {
+      "id": "conv_1788502110_51d286",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T06:08:30.433671+00:00",
+      "updated_at": "2026-09-04T06:08:30.449480+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788502110433_af0c",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T06:08:30.433671+00:00"
+        },
+        {
+          "id": "msg_1788502110449_3366",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T06:08:30.449480+00:00"
+        }
+      ]
+    },
+    "conv_1788502110_56da28": {
+      "id": "conv_1788502110_56da28",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T06:08:30.469451+00:00",
+      "updated_at": "2026-09-04T06:08:30.488987+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788502110469_fbc6",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T06:08:30.469451+00:00"
+        },
+        {
+          "id": "msg_1788502110489_2285",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T06:08:30.488987+00:00"
+        }
+      ]
+    },
+    "conv_1788502110_061446": {
+      "id": "conv_1788502110_061446",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T06:08:30.520555+00:00",
+      "updated_at": "2026-09-04T06:08:30.541412+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788502110520_f40c",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T06:08:30.520555+00:00"
+        },
+        {
+          "id": "msg_1788502110541_6d66",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T06:08:30.541412+00:00"
+        }
+      ]
+    },
+    "conv_1788512311_84bcf5": {
+      "id": "conv_1788512311_84bcf5",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T08:58:31.377055+00:00",
+      "updated_at": "2026-09-04T08:58:31.393096+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788512311377_1383",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T08:58:31.377055+00:00"
+        },
+        {
+          "id": "msg_1788512311393_1602",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T08:58:31.393096+00:00"
+        }
+      ]
+    },
+    "conv_1788512311_3be220": {
+      "id": "conv_1788512311_3be220",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T08:58:31.420786+00:00",
+      "updated_at": "2026-09-04T08:58:31.441739+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788512311420_ec95",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T08:58:31.420786+00:00"
+        },
+        {
+          "id": "msg_1788512311441_43d5",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T08:58:31.441739+00:00"
+        }
+      ]
+    },
+    "conv_1788512311_355aa8": {
+      "id": "conv_1788512311_355aa8",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T08:58:31.474891+00:00",
+      "updated_at": "2026-09-04T08:58:31.497148+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788512311474_c9df",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T08:58:31.474891+00:00"
+        },
+        {
+          "id": "msg_1788512311497_62c7",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T08:58:31.497148+00:00"
+        }
+      ]
+    },
+    "conv_1788513355_eb0ac3": {
+      "id": "conv_1788513355_eb0ac3",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T09:15:55.526567+00:00",
+      "updated_at": "2026-09-04T09:15:55.553278+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788513355526_1777",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T09:15:55.526567+00:00"
+        },
+        {
+          "id": "msg_1788513355553_2d6a",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T09:15:55.553278+00:00"
+        }
+      ]
+    },
+    "conv_1788513355_b2ff18": {
+      "id": "conv_1788513355_b2ff18",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T09:15:55.576112+00:00",
+      "updated_at": "2026-09-04T09:15:55.593366+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788513355576_71b6",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T09:15:55.576112+00:00"
+        },
+        {
+          "id": "msg_1788513355593_a16c",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T09:15:55.593366+00:00"
+        }
+      ]
+    },
+    "conv_1788513355_538859": {
+      "id": "conv_1788513355_538859",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T09:15:55.624071+00:00",
+      "updated_at": "2026-09-04T09:15:55.641702+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788513355624_6c6e",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T09:15:55.624071+00:00"
+        },
+        {
+          "id": "msg_1788513355641_51fc",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T09:15:55.641702+00:00"
+        }
+      ]
+    },
+    "conv_1788514284_10dab4": {
+      "id": "conv_1788514284_10dab4",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T09:31:24.404440+00:00",
+      "updated_at": "2026-09-04T09:31:24.433417+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788514284404_a92a",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T09:31:24.404440+00:00"
+        },
+        {
+          "id": "msg_1788514284433_67e6",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T09:31:24.433417+00:00"
+        }
+      ]
+    },
+    "conv_1788514284_6c5a76": {
+      "id": "conv_1788514284_6c5a76",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T09:31:24.454178+00:00",
+      "updated_at": "2026-09-04T09:31:24.477324+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788514284454_2d53",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T09:31:24.454178+00:00"
+        },
+        {
+          "id": "msg_1788514284477_14e1",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T09:31:24.477324+00:00"
+        }
+      ]
+    },
+    "conv_1788514284_1dc27c": {
+      "id": "conv_1788514284_1dc27c",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T09:31:24.509727+00:00",
+      "updated_at": "2026-09-04T09:31:24.527052+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788514284509_c2e4",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T09:31:24.509727+00:00"
+        },
+        {
+          "id": "msg_1788514284527_7d13",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T09:31:24.527052+00:00"
+        }
+      ]
+    },
+    "conv_1788514610_99e060": {
+      "id": "conv_1788514610_99e060",
+      "title": "Hello, how are you?",
+      "created_at": "2026-09-04T09:36:50.812564+00:00",
+      "updated_at": "2026-09-04T09:36:50.837156+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788514610812_bde5",
+          "role": "user",
+          "content": "Hello, how are you?",
+          "timestamp": "2026-09-04T09:36:50.812564+00:00"
+        },
+        {
+          "id": "msg_1788514610837_c910",
+          "role": "assistant",
+          "content": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+          "timestamp": "2026-09-04T09:36:50.837156+00:00"
+        }
+      ]
+    },
+    "conv_1788514610_ce216c": {
+      "id": "conv_1788514610_ce216c",
+      "title": "Its time complexity?",
+      "created_at": "2026-09-04T09:36:50.860270+00:00",
+      "updated_at": "2026-09-04T09:36:50.881472+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788514610860_dbbf",
+          "role": "user",
+          "content": "What is its time complexity?",
+          "timestamp": "2026-09-04T09:36:50.860270+00:00"
+        },
+        {
+          "id": "msg_1788514610881_fa42",
+          "role": "assistant",
+          "content": "A binary search algorithm has O(log n) time complexity.",
+          "timestamp": "2026-09-04T09:36:50.881472+00:00"
+        }
+      ]
+    },
+    "conv_1788514610_3d8cfc": {
+      "id": "conv_1788514610_3d8cfc",
+      "title": "Write a Python add function",
+      "created_at": "2026-09-04T09:36:50.913884+00:00",
+      "updated_at": "2026-09-04T09:36:50.934762+00:00",
+      "model": "qwen2.5:latest",
+      "messages": [
+        {
+          "id": "msg_1788514610913_44e7",
+          "role": "user",
+          "content": "Write a Python add function",
+          "timestamp": "2026-09-04T09:36:50.913884+00:00"
+        },
+        {
+          "id": "msg_1788514610934_d297",
+          "role": "assistant",
+          "content": "Here is a Python function: def add(a, b): return a + b",
+          "timestamp": "2026-09-04T09:36:50.934762+00:00"
+        }
+      ]
+    }
+  }
+}

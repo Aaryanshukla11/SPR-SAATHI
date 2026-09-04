@@ -46,6 +46,9 @@ MOUSEEVENTF_ABSOLUTE = 0x8000
 # Track mouse buttons held down by the AI
 HELD_BUTTONS = set()
 
+# In-memory clipboard buffer for non-Windows, headless environments, and test isolation
+_CLIPBOARD_FALLBACK_TEXT: Optional[str] = None
+
 class RECT(ctypes.Structure):
     _fields_ = [
         ("left", ctypes.c_long),
@@ -283,39 +286,77 @@ def hotkey(keys: List[str]):
                 send_input_keyboard(vk, 0, KEYEVENTF_KEYUP)
         time.sleep(0.02)
 
-def get_clipboard_text() -> Optional[str]:
-    """
-    Safely retrieves Unicode text currently on the Windows clipboard.
-    Returns None if clipboard is empty, holds non-text data, or cannot be opened.
-    """
+def clear_clipboard() -> bool:
+    """Safely empties the clipboard contents."""
+    global _CLIPBOARD_FALLBACK_TEXT
+    _CLIPBOARD_FALLBACK_TEXT = None
     if not IS_WINDOWS:
-        return None
-    CF_UNICODETEXT = 13
+        return True
     for _ in range(25):
         if ctypes.windll.user32.OpenClipboard(None):
             try:
-                if not ctypes.windll.user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
-                    return None
-                h_data = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
-                if not h_data:
-                    return None
-                p_data = ctypes.windll.kernel32.GlobalLock(h_data)
-                if p_data:
-                    try:
-                        text = ctypes.wstring_at(p_data)
-                        return text
-                    finally:
-                        ctypes.windll.kernel32.GlobalUnlock(h_data)
+                ctypes.windll.user32.EmptyClipboard()
+                return True
             finally:
                 ctypes.windll.user32.CloseClipboard()
-            return None
         time.sleep(0.015)
-    return None
+    return False
+
+def get_clipboard_text() -> Optional[str]:
+    """
+    Safely retrieves Unicode or ANSI text currently on the Windows clipboard.
+    Returns None if clipboard is empty, holds non-text data, or cannot be opened.
+    Includes robust retry loop that does not prematurely abort on handle locking delays.
+    """
+    global _CLIPBOARD_FALLBACK_TEXT
+    if not IS_WINDOWS:
+        return _CLIPBOARD_FALLBACK_TEXT
+
+    CF_TEXT = 1
+    CF_UNICODETEXT = 13
+    for attempt in range(30):
+        if ctypes.windll.user32.OpenClipboard(None):
+            try:
+                has_unicode = ctypes.windll.user32.IsClipboardFormatAvailable(CF_UNICODETEXT)
+                has_ansi = ctypes.windll.user32.IsClipboardFormatAvailable(CF_TEXT)
+                if has_unicode:
+                    h_data = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
+                    if h_data:
+                        p_data = ctypes.windll.kernel32.GlobalLock(h_data)
+                        if p_data:
+                            try:
+                                text = ctypes.wstring_at(p_data)
+                                _CLIPBOARD_FALLBACK_TEXT = text
+                                return text
+                            finally:
+                                ctypes.windll.kernel32.GlobalUnlock(h_data)
+                elif has_ansi:
+                    h_data = ctypes.windll.user32.GetClipboardData(CF_TEXT)
+                    if h_data:
+                        p_data = ctypes.windll.kernel32.GlobalLock(h_data)
+                        if p_data:
+                            try:
+                                raw = ctypes.string_at(p_data)
+                                text = raw.decode("utf-8", errors="replace")
+                                _CLIPBOARD_FALLBACK_TEXT = text
+                                return text
+                            finally:
+                                ctypes.windll.kernel32.GlobalUnlock(h_data)
+                else:
+                    # Neither text format available
+                    return None
+            finally:
+                ctypes.windll.user32.CloseClipboard()
+            # If clipboard opened and format was available but lock failed, continue retry loop
+        time.sleep(0.015)
+    return _CLIPBOARD_FALLBACK_TEXT
 
 def set_clipboard_text(text: str) -> bool:
     """Sets Unicode text onto the Windows clipboard using 64-bit Win32 GlobalAlloc/SetClipboardData."""
+    global _CLIPBOARD_FALLBACK_TEXT
+    _CLIPBOARD_FALLBACK_TEXT = text
     if not IS_WINDOWS:
-        return False
+        return True
     CF_UNICODETEXT = 13
     raw_bytes = text.encode("utf-16-le") + b"\x00\x00"
     for _ in range(30):
@@ -396,10 +437,13 @@ def type_text(text: str, chunk_size: int = 1, call_id: str = "", target_window_h
         wait_duration = 0.45 if len(normalized_text) > 500 else 0.35
         time.sleep(wait_duration)
         
-        # 7. Restore previous clipboard contents if any existed
+        # 7. Restore previous clipboard contents if any existed, or clear if originally empty
         clipboard_restored = False
         if prev_clipboard is not None and prev_clipboard != normalized_text:
             clipboard_restored = set_clipboard_text(prev_clipboard)
+        elif prev_clipboard is None:
+            clear_clipboard()
+            clipboard_restored = True
             
         duration_ms = (time.time() - start_time) * 1000
         
@@ -640,10 +684,17 @@ def _attach_thread_to_desktop():
 def get_active_window_details() -> Optional[Dict[str, Any]]:
     if not IS_WINDOWS:
         return {
+            "hwnd": 1111,
             "title": "Mock OS - Desktop",
             "process": "explorer.exe",
+            "process_name": "explorer.exe",
             "pid": 9999,
-            "bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080}
+            "bounds": {
+                "x": 0, "y": 0, "width": 1920, "height": 1080,
+                "left": 0, "top": 0, "right": 1920, "bottom": 1080
+            },
+            "is_minimized": False,
+            "is_responsive": True
         }
         
     _attach_thread_to_desktop()
@@ -674,13 +725,20 @@ def get_active_window_details() -> Optional[Dict[str, Any]]:
         "hwnd": hwnd,
         "title": title,
         "process": process_name,
+        "process_name": process_name,
         "pid": pid.value,
         "bounds": {
             "x": int(rect.left),
             "y": int(rect.top),
             "width": int(rect.right - rect.left),
-            "height": int(rect.bottom - rect.top)
-        }
+            "height": int(rect.bottom - rect.top),
+            "left": int(rect.left),
+            "top": int(rect.top),
+            "right": int(rect.right),
+            "bottom": int(rect.bottom)
+        },
+        "is_minimized": bool(ctypes.windll.user32.IsIconic(hwnd)),
+        "is_responsive": is_window_responsive(hwnd)
     }
 
 if IS_WINDOWS:
@@ -698,8 +756,14 @@ def list_desktop_windows() -> List[Dict[str, Any]]:
                 "hwnd": 1111,
                 "title": "Mock OS - Desktop",
                 "process": "explorer.exe",
+                "process_name": "explorer.exe",
                 "pid": 9999,
-                "bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080}
+                "bounds": {
+                    "x": 0, "y": 0, "width": 1920, "height": 1080,
+                    "left": 0, "top": 0, "right": 1920, "bottom": 1080
+                },
+                "is_minimized": False,
+                "is_responsive": True
             }
         ]
         
@@ -738,13 +802,20 @@ def list_desktop_windows() -> List[Dict[str, Any]]:
                             "hwnd": hwnd,
                             "title": title,
                             "process": process_name,
+                            "process_name": process_name,
                             "pid": pid.value,
                             "bounds": {
                                 "x": int(rect.left),
                                 "y": int(rect.top),
                                 "width": int(w),
-                                "height": int(h)
-                            }
+                                "height": int(h),
+                                "left": int(rect.left),
+                                "top": int(rect.top),
+                                "right": int(rect.right),
+                                "bottom": int(rect.bottom)
+                            },
+                            "is_minimized": bool(ctypes.windll.user32.IsIconic(hwnd)),
+                            "is_responsive": is_window_responsive(hwnd)
                         })
         except Exception:
             pass
@@ -1337,7 +1408,35 @@ def get_window_hierarchy(hwnd: int) -> List[Dict[str, Any]]:
     Extracts control HWND, class name (e.g. Edit, Button, DirectUIHWND),
     control text, bounds, and visibility.
     """
-    if not IS_WINDOWS or not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+    if not IS_WINDOWS:
+        if hwnd:
+            return [
+                {
+                    "hwnd": hwnd * 10 + 1,
+                    "class_name": "Edit",
+                    "text": "Document text editor",
+                    "visible": True,
+                    "control_id": 1,
+                    "bounds": {
+                        "x": 50, "y": 50, "width": 800, "height": 600,
+                        "left": 50, "top": 50, "right": 850, "bottom": 650
+                    }
+                },
+                {
+                    "hwnd": hwnd * 10 + 2,
+                    "class_name": "Button",
+                    "text": "OK",
+                    "visible": True,
+                    "control_id": 2,
+                    "bounds": {
+                        "x": 860, "y": 50, "width": 80, "height": 30,
+                        "left": 860, "top": 50, "right": 940, "bottom": 80
+                    }
+                }
+            ]
+        return []
+
+    if not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
         return []
 
     children: List[Dict[str, Any]] = []
@@ -1363,6 +1462,9 @@ def get_window_hierarchy(hwnd: int) -> List[Dict[str, Any]]:
             visible = bool(ctypes.windll.user32.IsWindowVisible(child_hwnd))
             ctrl_id = ctypes.windll.user32.GetDlgCtrlID(child_hwnd)
 
+            w = max(0, rect.right - rect.left)
+            h = max(0, rect.bottom - rect.top)
+
             children.append({
                 "hwnd": child_hwnd,
                 "class_name": class_name,
@@ -1370,10 +1472,14 @@ def get_window_hierarchy(hwnd: int) -> List[Dict[str, Any]]:
                 "visible": visible,
                 "control_id": ctrl_id,
                 "bounds": {
-                    "x": rect.left,
-                    "y": rect.top,
-                    "width": max(0, rect.right - rect.left),
-                    "height": max(0, rect.bottom - rect.top)
+                    "x": int(rect.left),
+                    "y": int(rect.top),
+                    "width": int(w),
+                    "height": int(h),
+                    "left": int(rect.left),
+                    "top": int(rect.top),
+                    "right": int(rect.right),
+                    "bottom": int(rect.bottom)
                 }
             })
         except Exception:

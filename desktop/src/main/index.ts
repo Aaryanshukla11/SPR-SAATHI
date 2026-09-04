@@ -9,7 +9,17 @@ let pyProc: ChildProcess | null = null
 let pyPort: number | null = null
 let mainWindow: BrowserWindow | null = null
 
+let isQuitting = false
+
 function startPythonProcess(): void {
+  if (pyProc && !pyProc.killed) {
+    try {
+      pyProc.kill()
+    } catch (e) {}
+    pyProc = null
+  }
+  pyPort = null
+
   // During dev, the app runs from desktop/out/main/index.js, so app.getAppPath() resolves to desktop/
   // agent folder is ../agent relative to desktop/
   const agentDir = path.resolve(app.getAppPath(), '../agent')
@@ -34,6 +44,9 @@ function startPythonProcess(): void {
     if (match) {
       pyPort = parseInt(match[1], 10)
       console.log(`[Main Process] Discovered Python server port: ${pyPort}`)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('backend-port-updated', pyPort)
+      }
     }
   })
   
@@ -45,6 +58,12 @@ function startPythonProcess(): void {
   pyProc.on('close', (code) => {
     console.log(`[Main Process] Python agent exited with code ${code}`)
     pyPort = -1
+    if (!isQuitting) {
+      console.log('[Main Process] Auto-restarting Python agent...')
+      setTimeout(() => {
+        if (!isQuitting) startPythonProcess()
+      }, 1000)
+    }
   })
 
   // Set startup timeout (15 seconds)
@@ -82,7 +101,7 @@ function createWindow(): void {
     alwaysOnTop: true,
     show: false,
     autoHideMenuBar: true,
-    title: 'SPR SAATHI',
+    title: 'ORBIT',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -167,17 +186,48 @@ app.whenReady().then(() => {
 
   // Register IPC handlers
   ipcMain.handle('get-backend-port', async () => {
-    if (pyPort !== null) {
+    if (pyPort !== null && pyPort > 0) {
       return pyPort
     }
+
+    // Check if active backend (e.g. 51733 or standard) is already responding
+    const candidatePorts = [51733, 8000, 8080]
+    for (const p of candidatePorts) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/api/health`, { signal: AbortSignal.timeout(300) })
+        if (res.ok) {
+          pyPort = p
+          return p
+        }
+      } catch (e) {}
+    }
+
     // Asynchronously poll until Python port is resolved
     return new Promise((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (pyPort !== null) {
+      let attempts = 0
+      const checkInterval = setInterval(async () => {
+        attempts++
+        if (pyPort !== null && pyPort > 0) {
           clearInterval(checkInterval)
           resolve(pyPort)
+          return
         }
-      }, 100)
+        for (const p of candidatePorts) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${p}/api/health`, { signal: AbortSignal.timeout(250) })
+            if (res.ok) {
+              clearInterval(checkInterval)
+              pyPort = p
+              resolve(p)
+              return
+            }
+          } catch (e) {}
+        }
+        if (attempts > 30) {
+          clearInterval(checkInterval)
+          resolve(pyPort || -1)
+        }
+      }, 200)
     })
   })
 
@@ -185,6 +235,12 @@ app.whenReady().then(() => {
     if (mainWindow) {
       mainWindow.setAlwaysOnTop(alwaysOnTop)
     }
+  })
+
+  ipcMain.handle('restart-backend', async () => {
+    console.log('[Main Process] Manual restart of Python agent requested.')
+    startPythonProcess()
+    return true
   })
 
   // Spawn Python Agent Runtime
@@ -205,6 +261,7 @@ app.on('window-all-closed', () => {
 
 // Clean up child process on exit
 app.on('will-quit', () => {
+  isQuitting = true
   if (pyProc) {
     console.log('[Main Process] Terminating Python process...')
     pyProc.kill()

@@ -3,7 +3,13 @@ import httpx
 import re
 import urllib.request
 from typing import List, Dict, Any, Optional
-from .base import BaseModelProvider, ModelResponse
+from .base import (
+    BaseModelProvider, ModelResponse,
+    safe_parse_api_json, clean_and_normalize_decision,
+    ModelPipelineError, ModelNetworkError, ModelServiceUnavailableError,
+    ModelHttpError, ModelEmptyResponseError, ModelApiJsonError,
+    ModelInvalidContentError, ModelDecisionParseError
+)
 
 class LocalModelProvider(BaseModelProvider):
     def _get_ollama_model(self) -> str:
@@ -54,13 +60,16 @@ class LocalModelProvider(BaseModelProvider):
 
         return raw_name or installed_models[0]
 
-    async def generate(self, prompt: str, system_instruction: Optional[str] = None) -> ModelResponse:
+    async def generate(self, prompt: str, system_instruction: Optional[str] = None, image_base64: Optional[str] = None) -> ModelResponse:
         ollama_model = self._get_ollama_model()
         url = "http://127.0.0.1:11434/api/chat"
         messages = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
+        user_msg: Dict[str, Any] = {"role": "user", "content": prompt}
+        if image_base64:
+            user_msg["images"] = [image_base64]
+        messages.append(user_msg)
         
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -157,67 +166,98 @@ class LocalModelProvider(BaseModelProvider):
             user_message
         ]
 
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                # Check health first
-                try:
-                    health_res = await client.get("http://127.0.0.1:11434/api/tags", timeout=10.0)
-                    if health_res.status_code != 200:
-                        raise RuntimeError("Ollama tags endpoint returned non-200")
-                except Exception as ex:
-                    raise RuntimeError(f"Ollama service check failed: {str(ex)}")
+        # Retry loop for transient failures (max 2 attempts)
+        max_retries = 2
+        last_err = None
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                    # Check health first
+                    try:
+                        health_res = await client.get("http://127.0.0.1:11434/api/tags", timeout=10.0)
+                        if health_res.status_code != 200:
+                            raise ModelServiceUnavailableError("Ollama tags endpoint returned non-200")
+                    except Exception as ex:
+                        raise ModelServiceUnavailableError(f"Ollama service check failed: {str(ex)}")
 
-                # Define structured format response schema
-                decision_schema = {
-                    "type": "object",
-                    "properties": {
-                        "decision_type": {
-                            "type": "string",
-                            "enum": ["tool_call", "final", "replan", "ask_user", "wait"]
+                    # Define structured format response schema
+                    decision_schema = {
+                        "type": "object",
+                        "properties": {
+                            "decision_type": {
+                                "type": "string",
+                                "enum": ["tool_call", "final", "replan", "ask_user", "wait"]
+                            },
+                            "tool_name": {"type": "string"},
+                            "arguments": {"type": "object"},
+                            "message": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "question": {"type": "string"},
+                            "duration_seconds": {"type": "number"}
                         },
-                        "tool_name": {"type": "string"},
-                        "arguments": {"type": "object"},
-                        "message": {"type": "string"},
-                        "reason": {"type": "string"},
-                        "question": {"type": "string"},
-                        "duration_seconds": {"type": "number"}
-                    },
-                    "required": ["decision_type"]
-                }
+                        "required": ["decision_type"]
+                    }
 
-                payload = {
-                    "model": ollama_model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {"temperature": 0.0},
-                    "format": decision_schema
-                }
-                
-                res = await client.post(url, json=payload, timeout=300.0)
-                if res.status_code != 200:
-                    raise RuntimeError(f"Ollama chat API returned status {res.status_code}")
-                
-                res_data = res.json()
-                content = res_data.get("message", {}).get("content", "")
-                
-                # Capture and store latency/token metrics for performance table
-                self.last_query_stats = {
-                    "prompt_tokens": res_data.get("prompt_eval_count", 0),
-                    "output_tokens": res_data.get("eval_count", 0),
-                    "prompt_eval_sec": res_data.get("prompt_eval_duration", 0) / 1e9,
-                    "eval_sec": res_data.get("eval_duration", 0) / 1e9,
-                    "total_sec": res_data.get("total_duration", 0) / 1e9
-                }
-                
-                print(f"[OLLAMA STATS] Model: {ollama_model} | Input Tokens: {self.last_query_stats['prompt_tokens']} | Output Tokens: {self.last_query_stats['output_tokens']} | Prompt Eval Time: {self.last_query_stats['prompt_eval_sec']:.4f}s | Generation Time: {self.last_query_stats['eval_sec']:.4f}s | Total Time: {self.last_query_stats['total_sec']:.4f}s")
-                print(f"[MODEL] Provider: Ollama | Model: {ollama_model} | Latency: 200ms | Payload Content: {content[:100]}")
-                from .base import clean_and_normalize_decision
-                decision = clean_and_normalize_decision(content)
-                return decision
-        except httpx.TimeoutException:
-            raise RuntimeError("MODEL_UNAVAILABLE: Ollama local service call timed out. This usually happens when the model is loading into VRAM/memory for the first time. Please wait a moment and try again.")
-        except Exception as e:
-            raise RuntimeError(f"MODEL_UNAVAILABLE: Ollama local service call failed. Please check Ollama is running on port 11434. Error: {str(e)}")
+                    payload = {
+                        "model": ollama_model,
+                        "messages": messages,
+                        "stream": False,
+                        "options": {"temperature": 0.0},
+                        "format": decision_schema
+                    }
+                    
+                    res = await client.post(url, json=payload, timeout=300.0)
+
+                    # Layer 1 Diagnostics & Safe Validation
+                    body_len = len(res.text) if res.text else 0
+                    snippet = (res.text[:120].replace("\n", " ")) if res.text else "<empty>"
+                    print(f"[MODEL_DIAGNOSTICS] Provider: Ollama | Endpoint: {url} | Model: {ollama_model} | Status: {res.status_code} | Body Length: {body_len} | Streaming: False | Snippet: {snippet!r}")
+
+                    if res.status_code != 200:
+                        raise ModelHttpError(res.status_code, f"Ollama chat API returned status {res.status_code}: {snippet}", endpoint=url)
+                    
+                    res_data = safe_parse_api_json(res.text, endpoint=url, status_code=res.status_code)
+                    content = res_data.get("message", {}).get("content", "")
+
+                    if not content or not str(content).strip():
+                        raise ModelEmptyResponseError(f"Ollama returned an empty message content from {ollama_model}.")
+                    
+                    # Capture and store latency/token metrics for performance table
+                    self.last_query_stats = {
+                        "prompt_tokens": res_data.get("prompt_eval_count", 0),
+                        "output_tokens": res_data.get("eval_count", 0),
+                        "prompt_eval_sec": res_data.get("prompt_eval_duration", 0) / 1e9,
+                        "eval_sec": res_data.get("eval_duration", 0) / 1e9,
+                        "total_sec": res_data.get("total_duration", 0) / 1e9
+                    }
+                    
+                    print(f"[OLLAMA STATS] Model: {ollama_model} | Input Tokens: {self.last_query_stats['prompt_tokens']} | Output Tokens: {self.last_query_stats['output_tokens']} | Prompt Eval Time: {self.last_query_stats['prompt_eval_sec']:.4f}s | Generation Time: {self.last_query_stats['eval_sec']:.4f}s | Total Time: {self.last_query_stats['total_sec']:.4f}s")
+                    print(f"[MODEL] Provider: Ollama | Model: {ollama_model} | Latency: 200ms | Payload Content: {content[:100]}")
+                    
+                    # Layer 2 Normalization: Clean and Normalize Decision
+                    decision = clean_and_normalize_decision(content)
+                    return decision
+
+            except (httpx.TimeoutException, ModelEmptyResponseError, httpx.ConnectError) as e:
+                last_err = e
+                if attempt < max_retries:
+                    backoff = 1.0 * (attempt + 1)
+                    print(f"[MODEL RETRY] Transient failure on attempt {attempt + 1}/{max_retries + 1} ({type(e).__name__}): {e}. Retrying in {backoff}s...")
+                    import asyncio
+                    await asyncio.sleep(backoff)
+                    continue
+                else:
+                    if isinstance(e, httpx.TimeoutException):
+                        raise RuntimeError("MODEL_UNAVAILABLE: Ollama local service call timed out. This usually happens when the model is loading into VRAM/memory for the first time. Please wait a moment and try again.")
+                    elif isinstance(e, ModelEmptyResponseError):
+                        raise RuntimeError(f"MODEL_UNAVAILABLE: Ollama local service call failed. Error: {str(e)}")
+                    else:
+                        raise RuntimeError(f"MODEL_UNAVAILABLE: Ollama local service call failed. Please check Ollama is running on port 11434. Error: {str(e)}")
+            except Exception as e:
+                err_text = str(e)
+                if "MODEL_UNAVAILABLE" in err_text:
+                    raise
+                raise RuntimeError(f"MODEL_UNAVAILABLE: Ollama local service call failed. Please check Ollama is running on port 11434. Error: {err_text}")
 
     async def transcribe_audio(self, audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
         raise NotImplementedError("Local audio transcription is not supported in the Local model provider. Please configure an API model provider (Gemini or OpenAI) for voice input support.")

@@ -38,3 +38,5 @@ agent/data/screenshots/
 *.png
 *.webp
 agent_execution_trace.json
+uploads/
+agent/data/uploads/

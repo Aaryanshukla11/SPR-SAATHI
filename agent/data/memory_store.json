@@ -469,6 +469,498 @@
       "message": "Here is a Python function: def add(a, b): return a + b",
       "timestamp": "2026-09-04T05:19:30.370640+00:00",
       "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T05:46:37.747967+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T05:46:37.766698+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T05:46:37.790112+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T05:46:37.796110+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T05:46:37.829282+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T05:46:37.836153+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T05:53:17.674937+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T05:53:17.682201+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T05:53:17.702522+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T05:53:17.708902+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T05:53:17.743088+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T05:53:17.749371+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T06:04:08.875349+00:00",
+      "session_id": "test_custom_session_123"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T06:04:08.883481+00:00",
+      "session_id": "test_custom_session_123"
+    },
+    {
+      "role": "user",
+      "message": "hie",
+      "timestamp": "2026-09-04T06:04:32.516510+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! How can I assist you today? \ud83d\ude0a",
+      "timestamp": "2026-09-04T06:05:06.622265+00:00",
+      "session_id": "default"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T06:05:14.556163+00:00",
+      "session_id": "conv_1788501914_6ddc4a"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T06:05:14.571561+00:00",
+      "session_id": "conv_1788501914_6ddc4a"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T06:05:14.614337+00:00",
+      "session_id": "conv_1788501914_4ef0e1"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T06:05:14.621021+00:00",
+      "session_id": "conv_1788501914_4ef0e1"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T06:05:14.663034+00:00",
+      "session_id": "conv_1788501914_637cd1"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T06:05:14.671229+00:00",
+      "session_id": "conv_1788501914_637cd1"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T06:08:02.095177+00:00",
+      "session_id": "test_session_6efd3cae"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T06:08:02.097808+00:00",
+      "session_id": "test_session_6efd3cae"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T06:08:02.147351+00:00",
+      "session_id": "conv_1788502082_131458"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T06:08:02.152250+00:00",
+      "session_id": "conv_1788502082_131458"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T06:08:02.173058+00:00",
+      "session_id": "conv_1788502082_f24f08"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T06:08:02.175352+00:00",
+      "session_id": "conv_1788502082_f24f08"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T06:08:02.191715+00:00",
+      "session_id": "conv_1788502082_0adfa7"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T06:08:02.194304+00:00",
+      "session_id": "conv_1788502082_0adfa7"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T06:08:26.619885+00:00",
+      "session_id": "test_session_1173f38a"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T06:08:26.625873+00:00",
+      "session_id": "test_session_1173f38a"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T06:08:30.438975+00:00",
+      "session_id": "conv_1788502110_51d286"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T06:08:30.443217+00:00",
+      "session_id": "conv_1788502110_51d286"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T06:08:30.475230+00:00",
+      "session_id": "conv_1788502110_56da28"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T06:08:30.481605+00:00",
+      "session_id": "conv_1788502110_56da28"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T06:08:30.526301+00:00",
+      "session_id": "conv_1788502110_061446"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T06:08:30.533999+00:00",
+      "session_id": "conv_1788502110_061446"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T06:12:01.868626+00:00",
+      "session_id": "test_session_bb47f5c8"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T06:12:01.878227+00:00",
+      "session_id": "test_session_bb47f5c8"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T06:30:44.005329+00:00",
+      "session_id": "test_session_b5dc1178"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T06:30:44.016774+00:00",
+      "session_id": "test_session_b5dc1178"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T06:47:19.863685+00:00",
+      "session_id": "test_session_9acf9f80"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T06:47:19.870661+00:00",
+      "session_id": "test_session_9acf9f80"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T07:07:15.664138+00:00",
+      "session_id": "test_session_328007f8"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T07:07:15.668580+00:00",
+      "session_id": "test_session_328007f8"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T07:19:53.268126+00:00",
+      "session_id": "test_session_26e428af"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T07:19:53.277034+00:00",
+      "session_id": "test_session_26e428af"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T07:36:40.797197+00:00",
+      "session_id": "test_session_8d7160b1"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T07:36:40.803228+00:00",
+      "session_id": "test_session_8d7160b1"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T08:58:27.201081+00:00",
+      "session_id": "test_session_38046a8e"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T08:58:27.207425+00:00",
+      "session_id": "test_session_38046a8e"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T08:58:31.380895+00:00",
+      "session_id": "conv_1788512311_84bcf5"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T08:58:31.385279+00:00",
+      "session_id": "conv_1788512311_84bcf5"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T08:58:31.426868+00:00",
+      "session_id": "conv_1788512311_3be220"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T08:58:31.434252+00:00",
+      "session_id": "conv_1788512311_3be220"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T08:58:31.481533+00:00",
+      "session_id": "conv_1788512311_355aa8"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T08:58:31.490275+00:00",
+      "session_id": "conv_1788512311_355aa8"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T09:15:51.316004+00:00",
+      "session_id": "test_session_136548ca"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T09:15:51.322070+00:00",
+      "session_id": "test_session_136548ca"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T09:15:55.538716+00:00",
+      "session_id": "conv_1788513355_eb0ac3"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T09:15:55.546825+00:00",
+      "session_id": "conv_1788513355_eb0ac3"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T09:15:55.582201+00:00",
+      "session_id": "conv_1788513355_b2ff18"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T09:15:55.588836+00:00",
+      "session_id": "conv_1788513355_b2ff18"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T09:15:55.629128+00:00",
+      "session_id": "conv_1788513355_538859"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T09:15:55.636208+00:00",
+      "session_id": "conv_1788513355_538859"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T09:31:19.668235+00:00",
+      "session_id": "test_session_547d4927"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T09:31:19.684503+00:00",
+      "session_id": "test_session_547d4927"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T09:31:24.418153+00:00",
+      "session_id": "conv_1788514284_10dab4"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T09:31:24.425984+00:00",
+      "session_id": "conv_1788514284_10dab4"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T09:31:24.460315+00:00",
+      "session_id": "conv_1788514284_6c5a76"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T09:31:24.468917+00:00",
+      "session_id": "conv_1788514284_6c5a76"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T09:31:24.515713+00:00",
+      "session_id": "conv_1788514284_1dc27c"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T09:31:24.520455+00:00",
+      "session_id": "conv_1788514284_1dc27c"
+    },
+    {
+      "role": "user",
+      "message": "Explain useEffect in React",
+      "timestamp": "2026-09-04T09:36:46.549893+00:00",
+      "session_id": "test_session_3054dcf0"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is your answer about React hooks.",
+      "timestamp": "2026-09-04T09:36:46.556642+00:00",
+      "session_id": "test_session_3054dcf0"
+    },
+    {
+      "role": "user",
+      "message": "Hello, how are you?",
+      "timestamp": "2026-09-04T09:36:50.818775+00:00",
+      "session_id": "conv_1788514610_99e060"
+    },
+    {
+      "role": "assistant",
+      "message": "Hello! I am SPR SAATHI in Chatbot Mode. How can I help you today?",
+      "timestamp": "2026-09-04T09:36:50.828195+00:00",
+      "session_id": "conv_1788514610_99e060"
+    },
+    {
+      "role": "user",
+      "message": "What is its time complexity?",
+      "timestamp": "2026-09-04T09:36:50.867043+00:00",
+      "session_id": "conv_1788514610_ce216c"
+    },
+    {
+      "role": "assistant",
+      "message": "A binary search algorithm has O(log n) time complexity.",
+      "timestamp": "2026-09-04T09:36:50.874947+00:00",
+      "session_id": "conv_1788514610_ce216c"
+    },
+    {
+      "role": "user",
+      "message": "Write a Python add function",
+      "timestamp": "2026-09-04T09:36:50.921263+00:00",
+      "session_id": "conv_1788514610_3d8cfc"
+    },
+    {
+      "role": "assistant",
+      "message": "Here is a Python function: def add(a, b): return a + b",
+      "timestamp": "2026-09-04T09:36:50.927817+00:00",
+      "session_id": "conv_1788514610_3d8cfc"
     }
   ],
   "memories": {}

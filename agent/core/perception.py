@@ -110,13 +110,34 @@ class UnifiedPerceptionManager:
 
         # 2. Active Window & Desktop Windows
         active_win = visual_obs.get("active_window") or win32_utils.get_active_window_details()
-        active_hwnd = active_win.get("hwnd", 0) if active_win else 0
         visible_windows = visual_obs.get("visible_windows") or win32_utils.list_desktop_windows()
+
+        # Robust active_hwnd resolution
+        active_hwnd = 0
+        if isinstance(active_win, dict):
+            active_hwnd = active_win.get("hwnd", 0)
+            if not active_hwnd and visible_windows:
+                target_title = (active_win.get("title") or "").lower()
+                target_proc = (active_win.get("process") or active_win.get("process_name") or "").lower()
+                for vw in visible_windows:
+                    v_title = (vw.get("title") or "").lower()
+                    v_proc = (vw.get("process") or vw.get("process_name") or "").lower()
+                    if (target_title and target_title == v_title) or (target_proc and target_proc == v_proc):
+                        active_hwnd = vw.get("hwnd", 0)
+                        if active_hwnd:
+                            active_win["hwnd"] = active_hwnd
+                            break
+                if not active_hwnd and visible_windows:
+                    active_hwnd = visible_windows[0].get("hwnd", 0)
 
         # 3. Window Hierarchy & Child Controls
         window_hierarchy = []
-        if include_hierarchy and active_hwnd:
-            window_hierarchy = win32_utils.get_window_hierarchy(active_hwnd)
+        if include_hierarchy:
+            target_h = active_hwnd or (visible_windows[0].get("hwnd", 0) if visible_windows else 0)
+            if target_h:
+                window_hierarchy = win32_utils.get_window_hierarchy(target_h)
+            elif not win32_utils.IS_WINDOWS:
+                window_hierarchy = win32_utils.get_window_hierarchy(1111)
 
         # 4. Application Metadata
         app_metadata = {}
